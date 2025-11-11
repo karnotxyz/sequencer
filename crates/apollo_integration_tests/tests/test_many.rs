@@ -5,19 +5,21 @@ use starknet_api::execution_resources::GasAmount;
 use starknet_api::rpc_transaction::RpcTransaction;
 use starknet_api::transaction::TransactionHash;
 
-use crate::common::{end_to_end_flow, TestScenario};
+use crate::common::{end_to_end_flow, EndToEndFlowArgs, TestScenario};
 
 mod common;
 
 /// This test checks that at least one block is full.
-#[tokio::test]
+/// The test uses 3 threads: 1 for the test's main thread and 2 for the sequencers.
+#[tokio::test(flavor = "multi_thread", worker_threads = 3)]
 async fn many_txs_fill_at_least_one_block() {
     end_to_end_flow(
-        TestIdentifier::EndToEndFlowTestManyTxs,
-        create_many_txs_scenario(),
-        GasAmount(40000000),
-        true,
-        false,
+        EndToEndFlowArgs::new(
+            TestIdentifier::EndToEndFlowTestManyTxs,
+            create_many_txs_scenario(),
+            GasAmount(40000000),
+        )
+        .expecting_full_blocks(),
     )
     .await
 }

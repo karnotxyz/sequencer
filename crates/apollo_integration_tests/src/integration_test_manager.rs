@@ -1,16 +1,18 @@
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeSet, HashMap, HashSet};
 use std::future::Future;
 use std::net::{Ipv4Addr, SocketAddr};
 use std::panic;
 use std::path::PathBuf;
 use std::time::Duration;
 
-use alloy::node_bindings::AnvilInstance;
+use apollo_base_layer_tests::anvil_base_layer::AnvilBaseLayer;
+use apollo_deployments::deployment_definitions::ComponentConfigInService;
 use apollo_http_server::test_utils::HttpTestClient;
 use apollo_http_server_config::config::HttpServerConfig;
 use apollo_infra_utils::dumping::serialize_to_file;
 use apollo_infra_utils::test_utils::{AvailablePortsGenerator, TestIdentifier};
 use apollo_infra_utils::tracing::{CustomLogger, TraceLevel};
+use apollo_l1_endpoint_monitor::monitor::MIN_EXPECTED_BLOCK_NUMBER;
 use apollo_l1_gas_price_provider_config::config::{EthToStrkOracleConfig, L1GasPriceScraperConfig};
 use apollo_monitoring_endpoint::test_utils::MonitoringClient;
 use apollo_monitoring_endpoint_config::config::MonitoringEndpointConfig;
@@ -24,21 +26,14 @@ use apollo_test_utils::send_request;
 use blockifier::context::ChainInfo;
 use futures::future::join_all;
 use futures::TryFutureExt;
+use indexmap::IndexMap;
 use mempool_test_utils::starknet_api_test_utils::{
     contract_class,
     AccountId,
     MultiAccountTransactionGenerator,
 };
-use papyrus_base_layer::ethereum_base_layer_contract::{
-    EthereumBaseLayerConfig,
-    StarknetL1Contract,
-};
-use papyrus_base_layer::test_utils::{
-    ethereum_base_layer_config_for_anvil,
-    make_block_history_on_anvil,
-    spawn_anvil_and_deploy_starknet_l1_contract,
-    DEFAULT_ANVIL_ADDITIONAL_ADDRESS_INDEX,
-};
+use papyrus_base_layer::test_utils::anvil_mine_blocks;
+use papyrus_base_layer::BaseLayerContract;
 use starknet_api::block::BlockNumber;
 use starknet_api::core::{ChainId, Nonce};
 use starknet_api::execution_resources::GasAmount;
@@ -48,7 +43,6 @@ use starknet_api::transaction::TransactionHash;
 use tokio::join;
 use tokio_util::task::AbortOnDropHandle;
 use tracing::{info, instrument};
-use url::Url;
 
 use crate::executable_setup::{ExecutableSetup, NodeExecutionId};
 use crate::monitoring_utils::{
@@ -97,10 +91,13 @@ pub const MONITORING_PORT_ARG: &str = "monitoring-port";
 const ALLOW_BOOTSTRAP_TXS: bool = false;
 
 pub struct NodeSetup {
-    executables: Vec<ExecutableSetup>,
+    // TODO(victork): remove indices.
+    executables: IndexMap<BTreeSet<ComponentConfigInService>, ExecutableSetup>,
     batcher_index: usize,
+    #[allow(dead_code)]
     http_server_index: usize,
     state_sync_index: usize,
+    #[allow(dead_code)]
     consensus_manager_index: usize,
 
     // Client for adding transactions to the sequencer node.
@@ -115,7 +112,7 @@ pub struct NodeSetup {
 
 impl NodeSetup {
     pub fn new(
-        executables: Vec<ExecutableSetup>,
+        executables: IndexMap<BTreeSet<ComponentConfigInService>, ExecutableSetup>,
         batcher_index: usize,
         http_server_index: usize,
         state_sync_index: usize,
@@ -153,19 +150,23 @@ impl NodeSetup {
     }
 
     pub fn batcher_monitoring_client(&self) -> &MonitoringClient {
-        &self.executables[self.batcher_index].monitoring_client
+        &self.get_batcher().monitoring_client
     }
 
     pub fn state_sync_monitoring_client(&self) -> &MonitoringClient {
-        &self.executables[self.state_sync_index].monitoring_client
+        &self.get_state_sync().monitoring_client
     }
 
     pub fn consensus_manager_monitoring_client(&self) -> &MonitoringClient {
-        &self.executables[self.consensus_manager_index].monitoring_client
+        &self.get_consensus_manager().monitoring_client
     }
 
-    pub fn get_executables(&self) -> &Vec<ExecutableSetup> {
-        &self.executables
+    pub fn get_executables(&self) -> impl ExactSizeIterator<Item = &ExecutableSetup> {
+        self.executables.values()
+    }
+
+    fn get_executables_mut(&mut self) -> impl ExactSizeIterator<Item = &mut ExecutableSetup> {
+        self.executables.values_mut()
     }
 
     pub fn set_executable_config_path(
@@ -173,8 +174,8 @@ impl NodeSetup {
         index: usize,
         new_path: PathBuf,
     ) -> Result<(), &'static str> {
-        if let Some(exec) = self.executables.get_mut(index) {
-            exec.node_config_path = new_path;
+        if let Some(exec) = self.executables.get_index_mut(index) {
+            exec.1.node_config_path = new_path;
             Ok(())
         } else {
             panic!("Invalid executable index")
@@ -183,28 +184,41 @@ impl NodeSetup {
 
     pub fn generate_simulator_ports_json(&self, path: &str) {
         let json_data = serde_json::json!({
-            HTTP_PORT_ARG: self.executables[self.http_server_index].get_config().http_server_config.as_ref().expect("Should have http server config").port,
-            MONITORING_PORT_ARG: self.executables[self.batcher_index].get_config().monitoring_endpoint_config.as_ref().expect("Should have monitoring endpoint config").port
+            HTTP_PORT_ARG: self.get_http_server().get_config().http_server_config.as_ref().expect("Should have http server config").port,
+            MONITORING_PORT_ARG: self.get_batcher().get_config().monitoring_endpoint_config.as_ref().expect("Should have monitoring endpoint config").port
         });
-        serialize_to_file(json_data, path);
+        serialize_to_file(&json_data, path);
     }
 
-    pub fn get_batcher_index(&self) -> usize {
-        self.batcher_index
+    fn get_executable_by_component(&self, component: ComponentConfigInService) -> &ExecutableSetup {
+        self.executables
+            .iter()
+            .find(|(components, _)| components.contains(&component))
+            .map(|(_, executable)| executable)
+            .unwrap_or_else(|| {
+                panic!("Expected at least one executable with component {:?}", component)
+            })
     }
 
-    pub fn get_http_server_index(&self) -> usize {
-        self.http_server_index
+    pub fn get_batcher(&self) -> &ExecutableSetup {
+        self.get_executable_by_component(ComponentConfigInService::Batcher)
     }
 
-    pub fn get_state_sync_index(&self) -> usize {
-        self.state_sync_index
+    pub fn get_http_server(&self) -> &ExecutableSetup {
+        self.get_executable_by_component(ComponentConfigInService::HttpServer)
+    }
+
+    pub fn get_state_sync(&self) -> &ExecutableSetup {
+        self.get_executable_by_component(ComponentConfigInService::StateSync)
+    }
+
+    pub fn get_consensus_manager(&self) -> &ExecutableSetup {
+        self.get_executable_by_component(ComponentConfigInService::Consensus)
     }
 
     pub fn run(self) -> RunningNode {
         let executable_handles = self
             .get_executables()
-            .iter()
             .map(|executable| {
                 info!("Running {}.", executable.node_execution_id);
                 spawn_run_node(
@@ -217,7 +231,20 @@ impl NodeSetup {
         RunningNode { node_setup: self, executable_handles }
     }
     pub fn get_node_index(&self) -> Option<usize> {
-        self.executables.first().map(|executable| executable.node_execution_id.get_node_index())
+        self.get_executables()
+            .next()
+            .map(|executable| executable.node_execution_id.get_node_index())
+    }
+
+    pub fn get_l1_gas_price_scraper_config(&self) -> L1GasPriceScraperConfig {
+        for executable_setup in self.get_executables() {
+            if let Some(l1_gas_price_scraper_config) =
+                &executable_setup.get_config().l1_gas_price_scraper_config
+            {
+                return l1_gas_price_scraper_config.clone();
+            }
+        }
+        unreachable!("No executable with a set l1 gas price scraper config.")
     }
 }
 
@@ -229,7 +256,7 @@ pub struct RunningNode {
 impl RunningNode {
     async fn await_alive(&self, interval: u64, max_attempts: usize) {
         self.propagate_executable_panic();
-        let await_alive_tasks = self.node_setup.executables.iter().map(|executable| {
+        let await_alive_tasks = self.node_setup.get_executables().map(|executable| {
             let result = executable.monitoring_client.await_alive(interval, max_attempts);
             result.unwrap_or_else(|_| {
                 panic!("Executable {:?} should be alive.", executable.node_execution_id)
@@ -255,16 +282,16 @@ pub struct IntegrationTestManager {
     idle_nodes: HashMap<usize, NodeSetup>,
     running_nodes: HashMap<usize, RunningNode>,
     tx_generator: MultiAccountTransactionGenerator,
-    // Handle for L1 server: the server is dropped when handle is dropped.
-    #[allow(dead_code)]
-    l1_handle: AnvilInstance,
-    starknet_l1_contract: StarknetL1Contract,
+    // Ethereum base layer coupled with an Anvil server instance, the server is dropped when the
+    // instance is dropped.
+    anvil_base_layer: AnvilBaseLayer,
 }
 
 impl IntegrationTestManager {
     pub async fn new(
         num_of_consolidated_nodes: usize,
         num_of_distributed_nodes: usize,
+        num_of_hybrid_nodes: usize,
         custom_paths: Option<CustomPaths>,
         test_unique_id: TestIdentifier,
     ) -> Self {
@@ -274,79 +301,38 @@ impl IntegrationTestManager {
             &tx_generator,
             num_of_consolidated_nodes,
             num_of_distributed_nodes,
+            num_of_hybrid_nodes,
             custom_paths,
             test_unique_id,
         )
         .await;
 
-        fn get_base_layer_config(sequencers_setup: &NodeSetup) -> (EthereumBaseLayerConfig, Url) {
-            // TODO(Tsabary): the pattern of iterating over executables to find the relevant config
-            // should be unified and improved, throughout.
-            for executable_setup in &sequencers_setup.executables {
-                // Must find both base layer config and url in the same executable, then return
-                // them.
-                if let Some(config) = &executable_setup.get_config().base_layer_config {
-                    let base_layer_config = config;
-                    if let Some(l1_monitor_config) =
-                        &executable_setup.get_config().l1_endpoint_monitor_config
-                    {
-                        let base_layer_url = l1_monitor_config.ordered_l1_endpoint_urls[0].clone();
-                        return (base_layer_config.clone(), base_layer_url);
-                    }
-                }
-            }
-            unreachable!("No executable with a set base layer config.")
-        }
-        let (base_layer_config, base_layer_url) =
-            get_base_layer_config(sequencers_setup.first().unwrap());
-
-        // TODO(Tsabary): these should be functions of `NodeSetup`.
-        fn get_l1_gas_price_scraper_config(
-            sequencers_setup: &NodeSetup,
-        ) -> L1GasPriceScraperConfig {
-            for executable_setup in &sequencers_setup.executables {
-                if let Some(l1_gas_price_scraper_config) =
-                    &executable_setup.get_config().l1_gas_price_scraper_config
-                {
-                    return l1_gas_price_scraper_config.clone();
-                }
-            }
-            unreachable!("No executable with a set l1 gas price scraper config.")
-        }
-
         let l1_gas_price_scraper_config =
-            get_l1_gas_price_scraper_config(sequencers_setup.first().unwrap());
+            sequencers_setup.first().unwrap().get_l1_gas_price_scraper_config();
 
-        let (anvil, starknet_l1_contract) =
-            spawn_anvil_and_deploy_starknet_l1_contract(&base_layer_config, &base_layer_url).await;
+        let anvil_base_layer = AnvilBaseLayer::new(Some(1)).await;
         // Send some transactions to L1 so it has a history of blocks to scrape gas prices from.
-        let num_blocks_needed_on_l1 = (l1_gas_price_scraper_config.number_of_blocks_for_mean
-            + l1_gas_price_scraper_config.finality)
-            .try_into()
-            .unwrap();
-        let sender_address = anvil.addresses()[DEFAULT_ANVIL_ADDITIONAL_ADDRESS_INDEX];
-        let receiver_address = anvil.addresses()[DEFAULT_ANVIL_ADDITIONAL_ADDRESS_INDEX + 1];
+        let num_blocks_needed_on_l1 = l1_gas_price_scraper_config.number_of_blocks_for_mean
+            + l1_gas_price_scraper_config.finality;
 
-        make_block_history_on_anvil(
-            sender_address,
-            receiver_address,
-            base_layer_config.clone(),
-            &base_layer_url,
+        assert!(
+            num_blocks_needed_on_l1 <= MIN_EXPECTED_BLOCK_NUMBER,
+            "num_blocks_needed_on_l1 ({}) exceeds MIN_EXPECTED_BLOCK_NUMBER ({})",
             num_blocks_needed_on_l1,
+            MIN_EXPECTED_BLOCK_NUMBER
+        );
+
+        anvil_mine_blocks(
+            anvil_base_layer.ethereum_base_layer.config.clone(),
+            MIN_EXPECTED_BLOCK_NUMBER,
+            &anvil_base_layer.get_url().await.expect("Failed to get anvil url."),
         )
         .await;
 
         let idle_nodes = create_map(sequencers_setup, |node| node.get_node_index());
         let running_nodes = HashMap::new();
 
-        Self {
-            node_indices,
-            idle_nodes,
-            running_nodes,
-            tx_generator,
-            l1_handle: anvil,
-            starknet_l1_contract,
-        }
+        Self { node_indices, idle_nodes, running_nodes, tx_generator, anvil_base_layer }
     }
 
     pub fn get_idle_nodes(&self) -> &HashMap<usize, NodeSetup> {
@@ -398,7 +384,7 @@ impl IntegrationTestManager {
                 .idle_nodes
                 .get_mut(&node_index)
                 .unwrap_or_else(|| panic!("Node {node_index} does not exist in idle_nodes."));
-            node_setup.executables.iter_mut().for_each(|executable| {
+            node_setup.get_executables_mut().for_each(|executable| {
                 info!("Modifying {} config.", executable.node_execution_id);
                 executable.modify_config(modify_config_fn);
             });
@@ -419,7 +405,7 @@ impl IntegrationTestManager {
                 .idle_nodes
                 .get_mut(&node_index)
                 .unwrap_or_else(|| panic!("Node {node_index} does not exist in idle_nodes."));
-            node_setup.executables.iter_mut().for_each(|executable| {
+            node_setup.get_executables_mut().for_each(|executable| {
                 info!("Modifying {} config pointers.", executable.node_execution_id);
                 executable.modify_config_pointers(modify_config_pointers_fn);
             });
@@ -445,7 +431,7 @@ impl IntegrationTestManager {
                     "Waiting for batcher to reach block {expected_block_number} in sequencer {} \
                      executable {}.",
                     running_node_setup.get_node_index().unwrap(),
-                    running_node_setup.get_batcher_index(),
+                    running_node_setup.batcher_index,
                 )),
             );
 
@@ -457,7 +443,7 @@ impl IntegrationTestManager {
                     "Waiting for state sync to reach block {expected_block_number} in sequencer \
                      {} executable {}.",
                     running_node_setup.get_node_index().unwrap(),
-                    running_node_setup.get_state_sync_index(),
+                    running_node_setup.state_sync_index,
                 )),
             );
 
@@ -549,7 +535,7 @@ impl IntegrationTestManager {
             .map(|node| &(node.node_setup))
             .unwrap_or_else(|| self.idle_nodes.get(&0).expect("Node 0 doesn't exist"));
 
-        for executable_setup in &node_0_setup.executables {
+        for executable_setup in node_0_setup.get_executables() {
             if let Some(http_server_config) = &executable_setup.get_config().http_server_config {
                 let localhost_url = format!("http://{}", Ipv4Addr::LOCALHOST);
                 let monitoring_port = executable_setup
@@ -627,7 +613,7 @@ impl IntegrationTestManager {
             .or_else(|| self.running_nodes.values().next().map(|node| &node.node_setup))
             .expect("There should be at least one running or idle node");
 
-        for executable_setup in &node_setup.executables {
+        for executable_setup in node_setup.get_executables() {
             if let Some(state_sync_config) = executable_setup.get_config().clone().state_sync_config
             {
                 return SocketAddr::from((
@@ -704,7 +690,7 @@ impl IntegrationTestManager {
         let send_l1_handler_tx_fn = &mut |l1_handler_tx| {
             send_message_to_l2_and_calculate_tx_hash(
                 l1_handler_tx,
-                &self.starknet_l1_contract,
+                &self.anvil_base_layer,
                 &chain_id,
             )
         };
@@ -729,14 +715,12 @@ impl IntegrationTestManager {
         self.perform_action_on_all_running_nodes(|sequencer_idx, running_node| {
             let node_setup = &running_node.node_setup;
             let batcher_monitoring_client = node_setup.batcher_monitoring_client();
-            let batcher_index = node_setup.get_batcher_index();
             let state_sync_monitoring_client = node_setup.state_sync_monitoring_client();
-            let state_sync_index = node_setup.get_state_sync_index();
             await_block(
                 batcher_monitoring_client,
-                batcher_index,
+                node_setup.batcher_index,
                 state_sync_monitoring_client,
-                state_sync_index,
+                node_setup.state_sync_index,
                 expected_block_number,
                 sequencer_idx,
             )
@@ -762,7 +746,7 @@ impl IntegrationTestManager {
         self.perform_action_on_all_running_nodes(|sequencer_idx, running_node| async move {
             let node_setup = &running_node.node_setup;
             let monitoring_client = node_setup.batcher_monitoring_client();
-            let batcher_index = node_setup.get_batcher_index();
+            let batcher_index = node_setup.batcher_index;
             let expected_height = expected_block_number.unchecked_next();
 
             let logger = CustomLogger::new(
@@ -815,7 +799,7 @@ impl IntegrationTestManager {
             .or_else(|| self.running_nodes.values().next().map(|node| &node.node_setup))
             .expect("There should be at least one running or idle node");
 
-        for executable_setup in &node_setup.executables {
+        for executable_setup in node_setup.get_executables() {
             if let Some(batcher_config) = &executable_setup.get_config().batcher_config {
                 return batcher_config.block_builder_config.chain_info.chain_id.clone();
             }
@@ -856,23 +840,23 @@ async fn get_sequencer_setup_configs(
     // TODO(Tsabary/Nadin): instead of number of nodes, this should be a vector of deployments.
     num_of_consolidated_nodes: usize,
     num_of_distributed_nodes: usize,
+    num_of_hybrid_nodes: usize,
     custom_paths: Option<CustomPaths>,
     test_unique_id: TestIdentifier,
 ) -> (Vec<NodeSetup>, HashSet<usize>) {
     let mut available_ports_generator = AvailablePortsGenerator::new(test_unique_id.into());
 
-    let mut node_component_configs =
-        Vec::with_capacity(num_of_consolidated_nodes + num_of_distributed_nodes);
+    let mut node_component_configs = Vec::with_capacity(
+        num_of_consolidated_nodes + num_of_distributed_nodes + num_of_hybrid_nodes,
+    );
     for _ in 0..num_of_consolidated_nodes {
         node_component_configs.push(create_consolidated_component_configs());
     }
-    // Testing the two various node configurations: distributed and hybrid.
-    // TODO(Tsabary): better handling of the number of each type.
-    for _ in 0..num_of_distributed_nodes / 2 {
+    for _ in 0..num_of_hybrid_nodes {
         node_component_configs
             .push(create_hybrid_component_configs(&mut available_ports_generator));
     }
-    for _ in num_of_distributed_nodes / 2..num_of_distributed_nodes {
+    for _ in 0..num_of_distributed_nodes {
         node_component_configs
             .push(create_distributed_component_configs(&mut available_ports_generator));
     }
@@ -921,8 +905,8 @@ async fn get_sequencer_setup_configs(
     let mut base_layer_ports = available_ports_generator
         .next()
         .expect("Failed to get an AvailablePorts instance for base layer config");
-    let (base_layer_config, base_layer_url) =
-        ethereum_base_layer_config_for_anvil(Some(base_layer_ports.get_next_port()));
+    let base_layer_config = AnvilBaseLayer::config();
+    let base_layer_url = AnvilBaseLayer::url();
 
     let mut nodes = Vec::new();
 
@@ -939,11 +923,11 @@ async fn get_sequencer_setup_configs(
 
     // Create nodes.
     for (node_index, node_component_config) in node_component_configs.into_iter().enumerate() {
-        let mut executables = Vec::new();
+        let mut executables = IndexMap::new();
         let batcher_index = node_component_config.get_batcher_index();
         let http_server_index = node_component_config.get_http_server_index();
         let state_sync_index = node_component_config.get_state_sync_index();
-        let class_manager_index = node_component_config.get_class_manager_index();
+        let _ = node_component_config.get_class_manager_index();
         let consensus_manager_index = node_component_config.get_consensus_manager_index();
 
         let mut consensus_manager_config = consensus_manager_configs.remove(0);
@@ -961,16 +945,13 @@ async fn get_sequencer_setup_configs(
 
         let storage_setup = get_integration_test_storage(
             node_index,
-            batcher_index,
-            state_sync_index,
-            class_manager_index,
             custom_paths.clone(),
             accounts.to_vec(),
             &chain_info,
         );
 
         // Per node, create the executables constituting it.
-        for (executable_index, executable_component_config) in
+        for (executable_index, (component_set, executable_component_config)) in
             node_component_config.into_iter().enumerate()
         {
             // Set a monitoring endpoint for each executable.
@@ -1007,7 +988,8 @@ async fn get_sequencer_setup_configs(
             let exec_config_path =
                 custom_paths.as_ref().and_then(|paths| paths.get_config_path(&node_execution_id));
 
-            executables.push(
+            executables.insert(
+                component_set,
                 ExecutableSetup::new(base_app_config, node_execution_id, exec_config_path).await,
             );
         }

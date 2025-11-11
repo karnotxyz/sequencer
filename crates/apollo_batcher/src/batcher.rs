@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::fmt::Write;
 use std::sync::Arc;
 
 use apollo_batcher_config::config::BatcherConfig;
@@ -63,12 +64,16 @@ use crate::metrics::{
     register_metrics,
     ProposalMetricsHandle,
     BATCHED_TRANSACTIONS,
+    BATCHER_L1_PROVIDER_ERRORS,
     LAST_BATCHED_BLOCK_HEIGHT,
     LAST_PROPOSED_BLOCK_HEIGHT,
     LAST_SYNCED_BLOCK_HEIGHT,
+    NUM_TRANSACTION_IN_BLOCK,
+    PROVING_GAS_IN_LAST_BLOCK,
     REJECTED_TRANSACTIONS,
     REVERTED_BLOCKS,
     REVERTED_TRANSACTIONS,
+    SIERRA_GAS_IN_LAST_BLOCK,
     STORAGE_HEIGHT,
     SYNCED_TRANSACTIONS,
 };
@@ -78,7 +83,11 @@ use crate::pre_confirmed_block_writer::{
     PreconfirmedBlockWriterTrait,
 };
 use crate::pre_confirmed_cende_client::PreconfirmedCendeClientTrait;
-use crate::transaction_provider::{ProposeTransactionProvider, ValidateTransactionProvider};
+use crate::transaction_provider::{
+    ProposeTransactionProvider,
+    TxProviderPhase,
+    ValidateTransactionProvider,
+};
 use crate::utils::{
     deadline_as_instant,
     proposal_status_from,
@@ -127,6 +136,9 @@ pub struct Batcher {
     /// Each stream is kept until SendProposalContent::Finish/Abort is received, or a new height is
     /// started.
     validate_tx_streams: HashMap<ProposalId, InputStreamSender>,
+
+    /// Number of proposals made since coming online.
+    proposals_counter: u64,
 }
 
 impl Batcher {
@@ -156,6 +168,8 @@ impl Batcher {
             executed_proposals: Arc::new(Mutex::new(HashMap::new())),
             propose_tx_streams: HashMap::new(),
             validate_tx_streams: HashMap::new(),
+            // Allow the first few proposals to be without L1 txs while system starts up.
+            proposals_counter: 1,
         }
     }
 
@@ -220,22 +234,31 @@ impl Batcher {
                 error!("Failed to update gas price in mempool: {}", err);
                 BatcherError::InternalError
             })?;
-        self.l1_provider_client
+        // Ignore errors. If start_block fails, then subsequent calls to l1 provider will fail on
+        // out of session and l1 provider will restart and bootstrap again.
+        let _ = self
+            .l1_provider_client
             .start_block(SessionState::Propose, propose_block_input.block_info.block_number)
             .await
-            .map_err(|err| {
+            .inspect_err(|err| {
                 error!(
                     "L1 provider is not ready to start proposing block {}: {}. ",
                     propose_block_input.block_info.block_number, err
                 );
-                BatcherError::NotReady
-            })?;
+                BATCHER_L1_PROVIDER_ERRORS.increment(1);
+            });
 
+        let start_phase = if self.proposals_counter % self.config.propose_l1_txs_every == 0 {
+            TxProviderPhase::L1
+        } else {
+            TxProviderPhase::Mempool
+        };
         let tx_provider = ProposeTransactionProvider::new(
             self.mempool_client.clone(),
             self.l1_provider_client.clone(),
             self.config.max_l1_handler_txs_per_block_proposal,
             propose_block_input.block_info.block_number,
+            start_phase,
         );
 
         // A channel to receive the transactions included in the proposed block.
@@ -259,6 +282,10 @@ impl Batcher {
                 BlockBuilderExecutionParams {
                     deadline: deadline_as_instant(propose_block_input.deadline)?,
                     is_validator: false,
+                    proposer_idle_detection_delay: self
+                        .config
+                        .block_builder_config
+                        .proposer_idle_detection_delay_millis,
                 },
                 Box::new(tx_provider),
                 Some(output_tx_sender),
@@ -289,6 +316,7 @@ impl Batcher {
             propose_block_input.proposal_id
         );
         LAST_PROPOSED_BLOCK_HEIGHT.set_lossy(block_number.0);
+        self.proposals_counter += 1;
         Ok(())
     }
 
@@ -305,16 +333,19 @@ impl Batcher {
             validate_block_input.retrospective_block_hash,
         )?;
 
-        self.l1_provider_client
+        // Ignore errors. If start_block fails, then subsequent calls to l1 provider will fail on
+        // out of session and l1 provider will restart and bootstrap again.
+        let _ = self
+            .l1_provider_client
             .start_block(SessionState::Validate, validate_block_input.block_info.block_number)
             .await
-            .map_err(|err| {
+            .inspect_err(|err| {
                 error!(
                     "L1 provider is not ready to start validating block {}: {}. ",
                     validate_block_input.block_info.block_number, err
                 );
-                BatcherError::NotReady
-            })?;
+                BATCHER_L1_PROVIDER_ERRORS.increment(1);
+            });
 
         // A channel to send the transactions to include in the block being validated.
         let (input_tx_sender, input_tx_receiver) =
@@ -338,6 +369,10 @@ impl Batcher {
                 BlockBuilderExecutionParams {
                     deadline: deadline_as_instant(validate_block_input.deadline)?,
                     is_validator: true,
+                    proposer_idle_detection_delay: self
+                        .config
+                        .block_builder_config
+                        .proposer_idle_detection_delay_millis,
                 },
                 Box::new(tx_provider),
                 None,
@@ -610,6 +645,10 @@ impl Batcher {
         BATCHED_TRANSACTIONS.increment(n_txs);
         REJECTED_TRANSACTIONS.increment(n_rejected_txs);
         REVERTED_TRANSACTIONS.increment(n_reverted_count);
+        NUM_TRANSACTION_IN_BLOCK.record_lossy(n_txs);
+        SIERRA_GAS_IN_LAST_BLOCK.set_lossy(block_execution_artifacts.bouncer_weights.sierra_gas.0);
+        PROVING_GAS_IN_LAST_BLOCK
+            .set_lossy(block_execution_artifacts.bouncer_weights.proving_gas.0);
 
         Ok(DecisionReachedResponse {
             state_diff,
@@ -647,6 +686,7 @@ impl Batcher {
             error!("Failed to commit proposal to storage: {}", err);
             BatcherError::InternalError
         })?;
+        info!("Successfully committed proposal for block {} to storage.", height);
 
         // Notify the L1 provider of the new block.
         let rejected_l1_handler_tx_hashes = rejected_tx_hashes
@@ -680,9 +720,7 @@ impl Batcher {
                     );
                 }
             }
-            // Rollback the state diff in the storage.
-            self.storage_writer.revert_block(height);
-            return Err(BatcherError::InternalError);
+            BATCHER_L1_PROVIDER_ERRORS.increment(1);
         }
 
         // Notify the mempool of the new block.
@@ -887,25 +925,36 @@ fn log_txs_execution_result(
     proposal_id: ProposalId,
     result: &Result<BlockExecutionArtifacts, Arc<BlockBuilderError>>,
 ) {
-    // Constructing log message.
     if let Ok(block_artifacts) = result {
-        let mut log_msg = format!(
+        let execution_infos = &block_artifacts.execution_data.execution_infos;
+        let rejected_hashes = &block_artifacts.execution_data.rejected_tx_hashes;
+
+        // Estimate capacity: base message + (hash + status) per transaction
+        // TransactionHash is 66 chars (0x + 64 hex), status is ~12 chars, separator is 4 chars
+        // Total per transaction: ~82 chars
+        const CHARS_PER_TX: usize = 82;
+        const BASE_CAPACITY: usize = 80; // Base message length
+        let total_txs = execution_infos.len() + rejected_hashes.len();
+        let estimated_capacity = BASE_CAPACITY + total_txs * CHARS_PER_TX;
+
+        let mut log_msg = String::with_capacity(estimated_capacity);
+        let _ = write!(
+            &mut log_msg,
             "Finished generating proposal {} with {} transactions",
             proposal_id,
-            block_artifacts.execution_data.execution_infos.len(),
+            execution_infos.len(),
         );
-        block_artifacts.execution_data.execution_infos.iter().for_each(|(tx_hash, info)| {
-            log_msg.push_str(&format!(", {tx_hash}:"));
-            if info.revert_error.is_some() {
-                log_msg.push_str(" Reverted");
-            } else {
-                log_msg.push_str(" Successful");
-            }
-        });
-        block_artifacts.execution_data.rejected_tx_hashes.iter().for_each(|tx_hash| {
-            log_msg.push_str(&format!(", {tx_hash}: Rejected"));
-        });
-        info!(log_msg);
+
+        for (tx_hash, info) in execution_infos {
+            let status = if info.revert_error.is_some() { "Reverted" } else { "Successful" };
+            let _ = write!(&mut log_msg, ", {tx_hash}: {status}");
+        }
+
+        for tx_hash in rejected_hashes {
+            let _ = write!(&mut log_msg, ", {tx_hash}: Rejected");
+        }
+
+        info!("{}", log_msg);
     }
 }
 

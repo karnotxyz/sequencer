@@ -8,6 +8,7 @@ use rstest::rstest;
 use starknet_api::block::GasPrice;
 use starknet_api::core::{EntryPointSelector, L2_ADDRESS_UPPER_BOUND};
 use starknet_api::data_availability::DataAvailabilityMode;
+use starknet_api::execution_resources::GasAmount;
 use starknet_api::rpc_transaction::EntryPointByType;
 use starknet_api::state::{EntryPoint, SierraContractClass};
 use starknet_api::test_utils::declare::rpc_declare_tx;
@@ -43,10 +44,11 @@ static DEFAULT_VALIDATOR_CONFIG_FOR_TESTING: LazyLock<StatelessTransactionValida
     LazyLock::new(|| StatelessTransactionValidatorConfig {
         validate_resource_bounds: false,
         min_gas_price: 0,
+        max_l2_gas_amount: 1_000_000_000,
         max_calldata_length: 1,
         max_signature_length: 1,
-        max_contract_bytecode_size: 100000,
-        max_contract_class_object_size: 100000,
+        max_contract_bytecode_size: 100_000,
+        max_contract_class_object_size: 100_000,
         min_sierra_version: *MIN_SIERRA_VERSION,
         max_sierra_version: *MAX_SIERRA_VERSION,
     });
@@ -105,6 +107,23 @@ static DEFAULT_VALIDATOR_CONFIG_FOR_TESTING: LazyLock<StatelessTransactionValida
         ..Default::default()
     }
 )]
+#[case::valid_l2_gas_amount_within_limit(
+    StatelessTransactionValidatorConfig {
+        validate_resource_bounds: true,
+        max_l2_gas_amount: 100,
+        ..*DEFAULT_VALIDATOR_CONFIG_FOR_TESTING
+    },
+    RpcTransactionArgs {
+        resource_bounds: AllResourceBounds {
+            l2_gas: ResourceBounds {
+                max_amount: GasAmount(50),
+                ..NON_EMPTY_RESOURCE_BOUNDS
+            },
+            ..Default::default()
+        },
+        ..Default::default()
+    }
+)]
 #[case::non_empty_valid_calldata(
     DEFAULT_VALIDATOR_CONFIG_FOR_TESTING.clone(),
     RpcTransactionArgs { calldata: calldata![Felt::ONE], ..Default::default()}
@@ -120,6 +139,36 @@ fn test_positive_flow(
     #[values(TransactionType::Declare, TransactionType::DeployAccount, TransactionType::Invoke)]
     tx_type: TransactionType,
 ) {
+    let tx_validator = StatelessTransactionValidator { config };
+
+    let tx = rpc_tx_for_testing(tx_type, rpc_tx_args);
+
+    assert_matches!(tx_validator.validate(&tx), Ok(()));
+}
+
+#[rstest]
+#[case::l2_gas_amount_out_of_limit(
+    StatelessTransactionValidatorConfig {
+        validate_resource_bounds: true,
+        max_l2_gas_amount: 100,
+        ..*DEFAULT_VALIDATOR_CONFIG_FOR_TESTING
+    },
+    RpcTransactionArgs {
+        resource_bounds: AllResourceBounds {
+            l2_gas: ResourceBounds {
+                max_amount: GasAmount(200),
+                ..NON_EMPTY_RESOURCE_BOUNDS
+            },
+            ..Default::default()
+        },
+        ..Default::default()
+    }
+)]
+fn valid_l2_gas_amount_on_declare(
+    #[case] config: StatelessTransactionValidatorConfig,
+    #[case] rpc_tx_args: RpcTransactionArgs,
+) {
+    let tx_type = TransactionType::Declare;
     let tx_validator = StatelessTransactionValidator { config };
 
     let tx = rpc_tx_for_testing(tx_type, rpc_tx_args);
@@ -158,6 +207,36 @@ fn test_invalid_resource_bounds(
     #[case] expected_error: StatelessTransactionValidatorError,
     #[values(TransactionType::Declare, TransactionType::DeployAccount, TransactionType::Invoke)]
     tx_type: TransactionType,
+) {
+    let tx_validator =
+        StatelessTransactionValidator { config: DEFAULT_VALIDATOR_CONFIG.to_owned() };
+
+    let tx = rpc_tx_for_testing(tx_type, rpc_tx_args);
+
+    assert_eq!(tx_validator.validate(&tx).unwrap_err(), expected_error);
+}
+
+#[rstest]
+#[case::max_l2_gas_amount_too_high(
+    RpcTransactionArgs {
+        resource_bounds: AllResourceBounds {
+            l2_gas: ResourceBounds {
+                max_amount: GasAmount(DEFAULT_VALIDATOR_CONFIG.max_l2_gas_amount + 1),
+                max_price_per_unit: GasPrice(DEFAULT_VALIDATOR_CONFIG.min_gas_price),
+            },
+            ..Default::default()
+        },
+        ..Default::default()
+    },
+    StatelessTransactionValidatorError::MaxGasAmountTooHigh {
+        gas_amount: GasAmount(DEFAULT_VALIDATOR_CONFIG.max_l2_gas_amount + 1),
+        max_gas_amount: DEFAULT_VALIDATOR_CONFIG.max_l2_gas_amount
+    },
+)]
+fn test_invalid_max_l2_gas_amount(
+    #[case] rpc_tx_args: RpcTransactionArgs,
+    #[case] expected_error: StatelessTransactionValidatorError,
+    #[values(TransactionType::DeployAccount, TransactionType::Invoke)] tx_type: TransactionType,
 ) {
     let tx_validator =
         StatelessTransactionValidator { config: DEFAULT_VALIDATOR_CONFIG.to_owned() };

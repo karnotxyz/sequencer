@@ -21,7 +21,6 @@ use crate::metrics::{
     register_scraper_metrics,
     L1_MESSAGE_SCRAPER_BASELAYER_ERROR_COUNT,
     L1_MESSAGE_SCRAPER_REORG_DETECTED,
-    L1_MESSAGE_SCRAPER_SECONDS_SINCE_LAST_SUCCESSFUL_SCRAPE,
     L1_MESSAGE_SCRAPER_SUCCESS_COUNT,
 };
 
@@ -31,6 +30,7 @@ pub mod l1_scraper_tests;
 
 type L1ScraperResult<T, B> = Result<T, L1ScraperError<B>>;
 
+// TODO(guyn): make this a config parameter
 // Sensible lower bound.
 const L1_BLOCK_TIME: u64 = 10;
 
@@ -41,7 +41,6 @@ pub struct L1Scraper<B: BaseLayerContract> {
     pub l1_provider_client: SharedL1ProviderClient,
     tracked_event_identifiers: Vec<EventIdentifier>,
     pub clock: Arc<dyn Clock>,
-    last_successful_scrape_timestamp: Option<u64>,
 }
 
 impl<B: BaseLayerContract + Send + Sync> L1Scraper<B> {
@@ -59,13 +58,18 @@ impl<B: BaseLayerContract + Send + Sync> L1Scraper<B> {
             config,
             tracked_event_identifiers: events_identifiers_to_track.to_vec(),
             clock: Arc::new(DefaultClock),
-            last_successful_scrape_timestamp: None,
         })
     }
 
+    /// Send an initialize message to the L1 provider, including events scraped on the first
+    /// iteration. The provider will return an error if it was already initialized (e.g., if the
+    /// scraper was restarted).
     #[instrument(skip(self), err)]
     async fn initialize(&mut self) -> L1ScraperResult<(), B> {
         let (latest_l1_block, events) = self.fetch_events().await?;
+
+        debug!("Latest L1 block for initialize: {latest_l1_block:?}");
+        debug!("All events scraped during initialize: {events:?}");
 
         // If this gets too high, send in batches.
         let initialize_result = self.l1_provider_client.initialize(events).await;
@@ -76,16 +80,18 @@ impl<B: BaseLayerContract + Send + Sync> L1Scraper<B> {
         Ok(())
     }
 
+    /// Scrape recent events and send them to the L1 provider.
     pub async fn send_events_to_l1_provider(&mut self) -> L1ScraperResult<(), B> {
         self.assert_no_l1_reorgs().await?;
 
         let (latest_l1_block, events) = self.fetch_events().await?;
+        // TODO(guyn): remove these _every_n_sec because the polling interval is longer.
         trace!("scraped up to {latest_l1_block:?}");
         info_every_n_sec!(1, "scraped up to {latest_l1_block:?}");
 
         // Sending even if there are no events, to keep the flow as simple/debuggable as possible.
-        // Perf hit is minimal, since the scraper is on the same machine as the provider (no net).
-        // If this gets spammy, short-circuit on events.empty().
+        // Perf hit is minimal, since the scraper is on the same machine as the provider (no
+        // network). If this gets spammy, short-circuit on events.empty().
         let add_events_result = self.l1_provider_client.add_events(events).await;
         handle_client_error(add_events_result)?;
 
@@ -94,6 +100,7 @@ impl<B: BaseLayerContract + Send + Sync> L1Scraper<B> {
         Ok(())
     }
 
+    /// Query the L1 base layer for all events since last_l1_block_processed.
     async fn fetch_events(&self) -> L1ScraperResult<(L1BlockReference, Vec<Event>), B> {
         let scrape_timestamp = self.clock.unix_now();
 
@@ -104,10 +111,20 @@ impl<B: BaseLayerContract + Send + Sync> L1Scraper<B> {
             .map_err(L1ScraperError::BaseLayerError)?;
 
         let Some(latest_l1_block) = latest_l1_block else {
+            // TODO(guyn): get rid of finality_too_high, use a better error.
             return Err(
                 L1ScraperError::finality_too_high(self.config.finality, &self.base_layer).await
             );
         };
+        // This can happen if, e.g., changing base layers. Should ignore and try scraping again.
+        if latest_l1_block.number <= self.last_l1_block_processed.number {
+            warn!(
+                "Latest L1 block number {} is not greater than the last processed L1 block number \
+                 {}. Ignoring, will try again on the next interval.",
+                latest_l1_block.number, self.last_l1_block_processed.number
+            );
+            return Ok((self.last_l1_block_processed, vec![]));
+        }
 
         let scraping_start_number = self.last_l1_block_processed.number + 1;
         let scraping_result = self
@@ -116,7 +133,7 @@ impl<B: BaseLayerContract + Send + Sync> L1Scraper<B> {
             .await;
 
         let l1_events = scraping_result.map_err(L1ScraperError::BaseLayerError)?;
-        // Used for debug.
+        // Used for debug. Collect the L1 tx hashes and L1 block timestamps.
         let l1_messages_info = l1_events
             .iter()
             .filter_map(|event| match event {
@@ -127,6 +144,7 @@ impl<B: BaseLayerContract + Send + Sync> L1Scraper<B> {
             })
             .collect::<Vec<_>>();
 
+        // Convert L1 events into Starknet provider events. Includes calculating the L2 tx hash.
         let events = l1_events
             .into_iter()
             .map(|event| {
@@ -135,7 +153,7 @@ impl<B: BaseLayerContract + Send + Sync> L1Scraper<B> {
             })
             .collect::<L1ScraperResult<Vec<_>, _>>()?;
 
-        // Used for debug.
+        // Used for debug. Collect the L2 hashes for events that are L1 handler transactions.
         let l2_hashes = events.iter().filter_map(|event| match event {
             Event::L1HandlerTransaction { l1_handler_tx, .. } => Some(l1_handler_tx.tx_hash),
             _ => None,
@@ -143,13 +161,30 @@ impl<B: BaseLayerContract + Send + Sync> L1Scraper<B> {
 
         let formatted_pairs = zip_eq(l1_messages_info, l2_hashes)
             .map(|((l1_hash, timestamp), l2_hash)| {
-                format!("L1 hash: {l1_hash:?}, L1 timestamp: {timestamp}, L2 hash: {l2_hash}")
+                format!("L1 tx hash: {l1_hash:?}, L1 timestamp: {timestamp}, L2 tx hash: {l2_hash}")
             })
             .collect::<Vec<_>>();
         if formatted_pairs.is_empty() {
             debug_every_n!(100, "Got Messages to L2: []");
         } else {
             debug!("Got Messages to L2: {formatted_pairs:?}");
+        }
+
+        // Debug: log cancellation started events.
+        let cancellation_started_events = events
+            .iter()
+            .filter_map(|event| match event {
+                Event::TransactionCancellationStarted { tx_hash, .. } => Some(*tx_hash),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        let formatted_cancellation_started_events = cancellation_started_events
+            .iter()
+            .map(|tx_hash| format!("Cancel tx with L2 hash: {tx_hash}"));
+        if cancellation_started_events.is_empty() {
+            debug_every_n!(100, "Got Cancellation Started Events: []");
+        } else {
+            debug!("Got Cancellation Started Events: {formatted_cancellation_started_events:?}");
         }
         Ok((latest_l1_block, events))
     }
@@ -171,6 +206,7 @@ impl<B: BaseLayerContract + Send + Sync> L1Scraper<B> {
         }
 
         loop {
+            // TODO(guyn): move sleep to the end of the loop.
             sleep(self.config.polling_interval_seconds).await;
 
             match self.send_events_to_l1_provider().await {
@@ -179,23 +215,19 @@ impl<B: BaseLayerContract + Send + Sync> L1Scraper<B> {
                     warn!("BaseLayerError during scraping: {e:?}");
                 }
                 Ok(_) => {
-                    self.last_successful_scrape_timestamp = Some(self.clock.unix_now());
                     L1_MESSAGE_SCRAPER_SUCCESS_COUNT.increment(1);
                 }
                 Err(e) => return Err(e),
             }
-
-            // Can reach this if Ok or if baselayer error. Other cases would return Err, crashing
-            // the node.
-            if let Some(last_successful_scrape_timestamp) = self.last_successful_scrape_timestamp {
-                L1_MESSAGE_SCRAPER_SECONDS_SINCE_LAST_SUCCESSFUL_SCRAPE
-                    .set_lossy(self.clock.unix_now() - last_successful_scrape_timestamp);
-            }
         }
     }
 
+    /// Fetch last_l1_block_processed again, check it still exists and that its hash is the same.
+    /// If a reorg occurred up to this block, return an error (existing data in the provider is
+    /// stale).
     async fn assert_no_l1_reorgs(&self) -> L1ScraperResult<(), B> {
         let last_processed_l1_block_number = self.last_l1_block_processed.number;
+        let last_processed_l1_block_hash = self.last_l1_block_processed.hash;
         let last_block_processed_fresh = self
             .base_layer
             .l1_block_at(last_processed_l1_block_number)
@@ -206,13 +238,13 @@ impl<B: BaseLayerContract + Send + Sync> L1Scraper<B> {
             L1_MESSAGE_SCRAPER_REORG_DETECTED.increment(1);
             return Err(L1ScraperError::L1ReorgDetected {
                 reason: format!(
-                    "Last processed L1 block with number {last_processed_l1_block_number} no \
-                     longer exists."
+                    "Last processed L1 block with number {last_processed_l1_block_number} and \
+                     hash {last_processed_l1_block_hash} no longer exists."
                 ),
             });
         };
 
-        if last_block_processed_fresh.hash != self.last_l1_block_processed.hash {
+        if last_block_processed_fresh.hash != last_processed_l1_block_hash {
             L1_MESSAGE_SCRAPER_REORG_DETECTED.increment(1);
             return Err(L1ScraperError::L1ReorgDetected {
                 reason: format!(
@@ -220,7 +252,7 @@ impl<B: BaseLayerContract + Send + Sync> L1Scraper<B> {
                      hash stored, {}",
                     last_block_processed_fresh.hash,
                     last_processed_l1_block_number,
-                    self.last_l1_block_processed.hash,
+                    last_processed_l1_block_hash
                 ),
             });
         }
@@ -229,6 +261,8 @@ impl<B: BaseLayerContract + Send + Sync> L1Scraper<B> {
     }
 }
 
+/// Use config.startup_rewind_time_seconds to estimate an L1 block number
+/// that is far enough back to start scraping from.
 pub async fn fetch_start_block<B: BaseLayerContract + Send + Sync>(
     base_layer: &B,
     config: &L1ScraperConfig,
@@ -238,27 +272,31 @@ pub async fn fetch_start_block<B: BaseLayerContract + Send + Sync>(
         .latest_l1_block_number(finality)
         .await
         .map_err(L1ScraperError::BaseLayerError)?;
-
-    let latest_l1_block = match latest_l1_block_number {
-        Some(latest_l1_block_number) => Ok(latest_l1_block_number),
-        None => Err(L1ScraperError::finality_too_high(finality, base_layer).await),
-    }?;
+    debug!("Latest L1 block number: {latest_l1_block_number:?}");
 
     // Estimate the number of blocks in the interval, to rewind from the latest block.
     let blocks_in_interval = config.startup_rewind_time_seconds.as_secs() / L1_BLOCK_TIME;
+    debug!("Blocks in interval: {blocks_in_interval}");
+
     // Add 50% safety margin.
     let safe_blocks_in_interval = blocks_in_interval + blocks_in_interval / 2;
+    debug!("Safe blocks in interval: {safe_blocks_in_interval}");
 
-    let l1_block_number_rewind = latest_l1_block.saturating_sub(safe_blocks_in_interval);
+    let l1_block_number_rewind = latest_l1_block_number.saturating_sub(safe_blocks_in_interval);
+    debug!("L1 block number rewind: {l1_block_number_rewind}");
 
     let block_reference_rewind = base_layer
         .l1_block_at(l1_block_number_rewind)
         .await
         .map_err(L1ScraperError::BaseLayerError)?
-        .expect(
-            "Rewound L1 block number is between 0 and the verified latest L1 block, so should \
-             exist",
-        );
+        .unwrap_or_else(|| {
+            panic!(
+                "Rewound L1 block number is between 0 and the verified latest L1 block \
+                 {latest_l1_block_number}, so should exist",
+            )
+        });
+    debug!("Block reference rewind: {block_reference_rewind:?}");
+
     Ok(block_reference_rewind)
 }
 
@@ -275,7 +313,10 @@ impl<B: BaseLayerContract + Send + Sync> ComponentStarter for L1Scraper<B> {
 pub enum L1ScraperError<T: BaseLayerContract + Send + Sync> {
     #[error("Base layer error: {0}")]
     BaseLayerError(T::Error),
-    #[error("Finality too high: {finality:?} > {latest_l1_block_no_finality:?}")]
+    #[error(
+        "Could not find block number. Finality {finality:?}, latest block: \
+         {latest_l1_block_no_finality:?}"
+    )]
     FinalityTooHigh { finality: u64, latest_l1_block_no_finality: L1BlockNumber },
     #[error("Failed to calculate hash: {0}")]
     HashCalculationError(StarknetApiError),
@@ -308,13 +349,15 @@ impl<B: BaseLayerContract + Send + Sync> PartialEq for L1ScraperError<B> {
     }
 }
 
+// TODO(guyn): get rid of finality_too_high, use a better error.
 impl<B: BaseLayerContract + Send + Sync> L1ScraperError<B> {
+    /// Pass any base layer errors. In the rare case that the finality is bigger than the latest L1
+    /// block number, return FinalityTooHigh.
     pub async fn finality_too_high(finality: u64, base_layer: &B) -> L1ScraperError<B> {
         let latest_l1_block_number_no_finality = base_layer.latest_l1_block_number(0).await;
 
         let latest_l1_block_no_finality = match latest_l1_block_number_no_finality {
-            Ok(block_number) => block_number
-                .expect("Latest *L1* block without finality is assumed to always exist."),
+            Ok(block_number) => block_number,
             Err(error) => return Self::BaseLayerError(error),
         };
 
@@ -334,13 +377,6 @@ fn handle_client_error<B: BaseLayerContract + Send + Sync>(
         }
         L1ProviderClientError::L1ProviderError(L1ProviderError::Uninitialized) => {
             Err(L1ScraperError::NeedsRestart)
-        }
-        L1ProviderClientError::L1ProviderError(L1ProviderError::UnsupportedL1Event(event)) => {
-            panic!(
-                "Scraper-->Provider consistency error: the event {event} is not supported by the \
-                 provider, but has been scraped and sent to it nonetheless. Check the list of \
-                 tracked events in the scraper and compare to the provider's."
-            )
         }
         error => panic!("Unexpected error: {error}"),
     }

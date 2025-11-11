@@ -4,6 +4,7 @@ use apollo_mempool::metrics::{
     MEMPOOL_POOL_SIZE,
     MEMPOOL_TRANSACTIONS_DROPPED,
 };
+use apollo_metrics::MetricCommon;
 
 use crate::alerts::{
     Alert,
@@ -29,7 +30,7 @@ fn get_mempool_pool_size_increase(
         MEMPOOL_POOL_SIZE.get_name_with_filter().to_string(),
         vec![AlertCondition {
             comparison_op: AlertComparisonOp::GreaterThan,
-            comparison_value: 2000.0,
+            comparison_value: 10000.0,
             logical_op: AlertLogicalOp::And,
         }],
         PENDING_DURATION_DEFAULT,
@@ -44,7 +45,7 @@ pub(crate) fn get_mempool_pool_size_increase_vec() -> Vec<Alert> {
     vec![
         get_mempool_pool_size_increase(
             AlertEnvFiltering::MainnetStyleAlerts,
-            AlertSeverity::Regular,
+            AlertSeverity::DayOnly,
         ),
         get_mempool_pool_size_increase(
             AlertEnvFiltering::TestnetStyleAlerts,

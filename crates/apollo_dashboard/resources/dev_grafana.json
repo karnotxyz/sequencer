@@ -3,23 +3,26 @@
     "Overview": {
       "panels": [
         {
+          "title": "Average Block Time",
+          "description": "Average block time (1m window)",
+          "type": "timeseries",
+          "exprs": [
+            "1 / rate(consensus_block_number{cluster=~\"$cluster\", namespace=~\"$namespace\"}[1m])"
+          ],
+          "extra_params": {
+            "unit": "s"
+          }
+        },
+        {
           "title": "Consensus Round",
           "description": "The round the node is currently working on",
           "type": "timeseries",
           "exprs": [
             "consensus_round{cluster=~\"$cluster\", namespace=~\"$namespace\"}"
           ],
-          "extra_params": {}
-        },
-        {
-          "title": "Write Blob Failure by Reason",
-          "description": "The number of failed blob writes to Cende (10m window)",
-          "type": "timeseries",
-          "exprs": [
-            "sum by (cende_write_failure_reason) (increase(cende_write_blob_failure{cluster=~\"$cluster\", namespace=~\"$namespace\"}[10m]))"
-          ],
           "extra_params": {
-            "log_query": "\"CENDE_FAILURE\""
+            "log_query": "\"START_ROUND\" OR \"PROPOSAL_FAILED\" OR textPayload=~\"DECISION_REACHED\"",
+            "log_comment": "-- \"START_HEIGHT:\" OR \"START_ROUND\" OR textPayload=~\"DECISION_REACHED\" OR \"PROPOSAL_FAILED\" OR \"Proposal succeeded\" OR \"Applying Timeout\" OR \"Accepting\" OR \"Broadcasting\""
           }
         },
         {
@@ -38,27 +41,27 @@
           "exprs": [
             "rate(batcher_batched_transactions{cluster=~\"$cluster\", namespace=~\"$namespace\"}[1m])"
           ],
-          "extra_params": {}
+          "extra_params": {
+            "log_query": "\"BATCHER_FIN_VALIDATOR\""
+          }
         },
         {
-          "title": "Sync Diff From Central",
-          "description": "The number of blocks that were not fully synced yet",
+          "title": "Consensus Height Diff From Sync",
+          "description": "The difference between the consensus height and the sync height",
           "type": "timeseries",
           "exprs": [
-            "apollo_central_sync_central_block_marker{cluster=~\"$cluster\", namespace=~\"$namespace\"} - apollo_state_sync_class_manager_marker{cluster=~\"$cluster\", namespace=~\"$namespace\"}"
+            "(consensus_block_number{cluster=~\"$cluster\", namespace=~\"$namespace\"} - apollo_state_sync_class_manager_marker{cluster=~\"$cluster\", namespace=~\"$namespace\"})"
           ],
           "extra_params": {}
         },
         {
-          "title": "Transaction Failure Rate by Type",
-          "description": "The rate of failed transactions vs received transactions by type (over the selected time range)",
+          "title": "Transactions Failed by Reason",
+          "description": "The number of transactions failed by reason (over the selected time range)",
           "type": "stat",
           "exprs": [
-            "(sum by (tx_type) (increase(gateway_transactions_failed{cluster=~\"$cluster\", namespace=~\"$namespace\"}[$__range])) / sum by (tx_type) (increase(gateway_transactions_received{cluster=~\"$cluster\", namespace=~\"$namespace\"}[$__range])))"
+            "sum by (add_tx_failure_reason) (increase(gateway_add_tx_failure{cluster=~\"$cluster\", namespace=~\"$namespace\"}[$__range])) > 0"
           ],
-          "extra_params": {
-            "unit": "percentunit"
-          }
+          "extra_params": {}
         }
       ],
       "collapsed": false
@@ -72,7 +75,10 @@
           "exprs": [
             "consensus_block_number{cluster=~\"$cluster\", namespace=~\"$namespace\"}"
           ],
-          "extra_params": {}
+          "extra_params": {
+            "log_query": "\"START_HEIGHT: running consensus for height\" OR \"Start building proposal\" OR \"Start validating proposal\"",
+            "log_comment": "-- \"START_HEIGHT:\" OR \"START_ROUND\" OR textPayload=~\"DECISION_REACHED\" OR \"PROPOSAL_FAILED\" OR \"Proposal succeeded\" OR \"Applying Timeout\" OR \"Accepting\" OR \"Broadcasting\""
+          }
         },
         {
           "title": "Consensus Round",
@@ -81,7 +87,45 @@
           "exprs": [
             "consensus_round{cluster=~\"$cluster\", namespace=~\"$namespace\"}"
           ],
-          "extra_params": {}
+          "extra_params": {
+            "log_query": "\"START_ROUND\" OR \"PROPOSAL_FAILED\" OR textPayload=~\"DECISION_REACHED\"",
+            "log_comment": "-- \"START_HEIGHT:\" OR \"START_ROUND\" OR textPayload=~\"DECISION_REACHED\" OR \"PROPOSAL_FAILED\" OR \"Proposal succeeded\" OR \"Applying Timeout\" OR \"Accepting\" OR \"Broadcasting\""
+          }
+        },
+        {
+          "title": "Consensus Round Advanced",
+          "description": "The number of times the consensus round advanced (counter is increased whenever round > 0) (10m window)",
+          "type": "timeseries",
+          "exprs": [
+            "increase(consensus_round_advances{cluster=~\"$cluster\", namespace=~\"$namespace\"}[10m])"
+          ],
+          "extra_params": {
+            "log_query": "\"START_ROUND\" OR \"PROPOSAL_FAILED\" OR textPayload=~\"DECISION_REACHED\"",
+            "log_comment": "-- \"START_HEIGHT:\" OR \"START_ROUND\" OR textPayload=~\"DECISION_REACHED\" OR \"PROPOSAL_FAILED\" OR \"Proposal succeeded\" OR \"Applying Timeout\" OR \"Accepting\" OR \"Broadcasting\""
+          }
+        },
+        {
+          "title": "Average Block Time",
+          "description": "Average block time (1m window)",
+          "type": "timeseries",
+          "exprs": [
+            "1 / rate(consensus_block_number{cluster=~\"$cluster\", namespace=~\"$namespace\"}[1m])"
+          ],
+          "extra_params": {
+            "unit": "s"
+          }
+        },
+        {
+          "title": "Consensus Round Above Zero",
+          "description": "Occurances where the consensus round was 1, relative to displayed range",
+          "type": "timeseries",
+          "exprs": [
+            "consensus_round_above_zero{cluster=~\"$cluster\", namespace=~\"$namespace\"} - (consensus_round_above_zero{cluster=~\"$cluster\", namespace=~\"$namespace\"} @ start())"
+          ],
+          "extra_params": {
+            "log_query": "\"START_ROUND\" OR \"PROPOSAL_FAILED\" OR textPayload=~\"DECISION_REACHED\"",
+            "log_comment": "-- \"START_HEIGHT:\" OR \"START_ROUND\" OR textPayload=~\"DECISION_REACHED\" OR \"PROPOSAL_FAILED\" OR \"Proposal succeeded\" OR \"Applying Timeout\" OR \"Accepting\" OR \"Broadcasting\""
+          }
         },
         {
           "title": "Consensus Height Diff From Sync",
@@ -93,14 +137,15 @@
           "extra_params": {}
         },
         {
-          "title": "Average Block Time",
-          "description": "Average block time (10m window)",
+          "title": "Consensus Decisions Reached As Proposer",
+          "description": "The number of rounds with decision reached where this node is the proposer (10m window)",
           "type": "timeseries",
           "exprs": [
-            "1 / rate(consensus_block_number{cluster=~\"$cluster\", namespace=~\"$namespace\"}[10m])"
+            "increase(consensus_decisions_reached_as_proposer{cluster=~\"$cluster\", namespace=~\"$namespace\"}[10m])"
           ],
           "extra_params": {
-            "unit": "s"
+            "log_query": "\"Building proposal\" OR \"BATCHER_FIN_PROPOSER\"",
+            "log_comment": "-- \"START_HEIGHT:\" OR \"START_ROUND\" OR textPayload=~\"DECISION_REACHED\" OR \"PROPOSAL_FAILED\" OR \"Proposal succeeded\" OR \"Applying Timeout\" OR \"Accepting\" OR \"Broadcasting\""
           }
         },
         {
@@ -110,7 +155,10 @@
           "exprs": [
             "increase(consensus_decisions_reached_by_consensus{cluster=~\"$cluster\", namespace=~\"$namespace\"}[10m])"
           ],
-          "extra_params": {}
+          "extra_params": {
+            "log_query": "\"DECISION_REACHED: Decision reached for round\"",
+            "log_comment": "-- \"START_HEIGHT:\" OR \"START_ROUND\" OR textPayload=~\"DECISION_REACHED\" OR \"PROPOSAL_FAILED\" OR \"Proposal succeeded\" OR \"Applying Timeout\" OR \"Accepting\" OR \"Broadcasting\""
+          }
         },
         {
           "title": "Decisions Reached By Sync",
@@ -119,7 +167,10 @@
           "exprs": [
             "increase(consensus_decisions_reached_by_sync{cluster=~\"$cluster\", namespace=~\"$namespace\"}[10m])"
           ],
-          "extra_params": {}
+          "extra_params": {
+            "log_query": "\"Decision learned via sync protocol.\"",
+            "log_comment": "-- \"START_HEIGHT:\" OR \"START_ROUND\" OR textPayload=~\"DECISION_REACHED\" OR \"PROPOSAL_FAILED\" OR \"Proposal succeeded\" OR \"Applying Timeout\" OR \"Accepting\" OR \"Broadcasting\""
+          }
         },
         {
           "title": "Proposal Build: Number of Proposals Started",
@@ -147,7 +198,8 @@
             "sum by (build_proposal_failure_reason) (increase(consensus_build_proposal_failure{cluster=~\"$cluster\", namespace=~\"$namespace\"}[$__range])) > 0"
           ],
           "extra_params": {
-            "log_query": "\"PROPOSAL_FAILED: Proposal failed as proposer\""
+            "log_query": "\"PROPOSAL_FAILED: Proposal failed as proposer\"",
+            "log_comment": "-- \"START_HEIGHT:\" OR \"START_ROUND\" OR textPayload=~\"DECISION_REACHED\" OR \"PROPOSAL_FAILED\" OR \"Proposal succeeded\" OR \"Applying Timeout\" OR \"Accepting\" OR \"Broadcasting\""
           }
         },
         {
@@ -166,7 +218,10 @@
           "exprs": [
             "increase(consensus_proposals_validated{cluster=~\"$cluster\", namespace=~\"$namespace\"}[10m])"
           ],
-          "extra_params": {}
+          "extra_params": {
+            "log_query": "\"Validated proposal.\" OR \"PROPOSAL_FAILED\"",
+            "log_comment": "-- \"START_HEIGHT:\" OR \"START_ROUND\" OR textPayload=~\"DECISION_REACHED\" OR \"PROPOSAL_FAILED\" OR \"Proposal succeeded\" OR \"Applying Timeout\" OR \"Accepting\" OR \"Broadcasting\""
+          }
         },
         {
           "title": "Proposal Validation: Number of Invalid Proposals",
@@ -175,7 +230,10 @@
           "exprs": [
             "increase(consensus_proposals_invalid{cluster=~\"$cluster\", namespace=~\"$namespace\"}[10m])"
           ],
-          "extra_params": {}
+          "extra_params": {
+            "log_query": "\"Validated proposal.\" OR \"PROPOSAL_FAILED\"",
+            "log_comment": "-- \"START_HEIGHT:\" OR \"START_ROUND\" OR textPayload=~\"DECISION_REACHED\" OR \"PROPOSAL_FAILED\" OR \"Proposal succeeded\" OR \"Applying Timeout\" OR \"Accepting\" OR \"Broadcasting\""
+          }
         },
         {
           "title": "Proposal Validation: Proposal Failure by Reason",
@@ -185,7 +243,8 @@
             "sum by (validate_proposal_failure_reason) (increase(consensus_validate_proposal_failure{cluster=~\"$cluster\", namespace=~\"$namespace\"}[$__range])) > 0"
           ],
           "extra_params": {
-            "log_query": "\"PROPOSAL_FAILED: Proposal failed as validator\""
+            "log_query": "\"PROPOSAL_FAILED: Proposal failed as validator\"",
+            "log_comment": "-- \"START_HEIGHT:\" OR \"START_ROUND\" OR textPayload=~\"DECISION_REACHED\" OR \"PROPOSAL_FAILED\" OR \"Proposal succeeded\" OR \"Applying Timeout\" OR \"Accepting\" OR \"Broadcasting\""
           }
         },
         {
@@ -195,7 +254,10 @@
           "exprs": [
             "sum by (timeout_type) (increase(consensus_timeouts{cluster=~\"$cluster\", namespace=~\"$namespace\"}[10m]))"
           ],
-          "extra_params": {}
+          "extra_params": {
+            "log_query": "\"Applying Timeout\"",
+            "log_comment": "-- \"START_HEIGHT:\" OR \"START_ROUND\" OR textPayload=~\"DECISION_REACHED\" OR \"PROPOSAL_FAILED\" OR \"Proposal succeeded\" OR \"Applying Timeout\" OR \"Accepting\" OR \"Broadcasting\""
+          }
         },
         {
           "title": "L2 Gas Price (GFri)",
@@ -263,7 +325,9 @@
           "exprs": [
             "increase(batcher_preconfirmed_block_written{cluster=~\"$cluster\", namespace=~\"$namespace\"}[10m])"
           ],
-          "extra_params": {}
+          "extra_params": {
+            "log_query": "\"write_pre_confirmed_block request succeeded.\""
+          }
         }
       ],
       "collapsed": true
@@ -277,7 +341,9 @@
           "exprs": [
             "batcher_storage_height{cluster=~\"$cluster\", namespace=~\"$namespace\"}"
           ],
-          "extra_params": {}
+          "extra_params": {
+            "log_query": "\"Committing block at height\""
+          }
         },
         {
           "title": "Batched Transactions Rate (TPS)",
@@ -286,7 +352,9 @@
           "exprs": [
             "rate(batcher_batched_transactions{cluster=~\"$cluster\", namespace=~\"$namespace\"}[1m])"
           ],
-          "extra_params": {}
+          "extra_params": {
+            "log_query": "\"BATCHER_FIN_VALIDATOR\""
+          }
         },
         {
           "title": "Proposal Build: Deferred TXs",
@@ -329,7 +397,7 @@
         {
           "title": "Block Close Reasons",
           "description": "Number of blocks closed by reason (10m window)",
-          "type": "timeseries",
+          "type": "stat",
           "exprs": [
             "sum by (block_close_reason) (increase(batcher_block_close_reason{cluster=~\"$cluster\", namespace=~\"$namespace\"}[10m]))"
           ],
@@ -353,7 +421,9 @@
           "exprs": [
             "consensus_num_txs_in_proposal{cluster=~\"$cluster\", namespace=~\"$namespace\"}"
           ],
-          "extra_params": {}
+          "extra_params": {
+            "log_query": "\"BATCHER_FIN_PROPOSER\""
+          }
         }
       ],
       "collapsed": true
@@ -505,7 +575,7 @@
           "description": "The number of transactions received by source (over the selected time range)",
           "type": "stat",
           "exprs": [
-            "sum  by (source) (increase(gateway_transactions_received{cluster=~\"$cluster\", namespace=~\"$namespace\"}[$__range])) "
+            "sum by (source) (increase(gateway_transactions_received{cluster=~\"$cluster\", namespace=~\"$namespace\"}[$__range]))"
           ],
           "extra_params": {
             "log_query": "\"Processing tx\" AND \"is_p2p=\""
@@ -516,7 +586,7 @@
           "description": "The number of transactions received by type (over the selected time range)",
           "type": "stat",
           "exprs": [
-            "sum  by (tx_type) (increase(gateway_transactions_received{cluster=~\"$cluster\", namespace=~\"$namespace\"}[$__range])) "
+            "sum by (tx_type) (increase(gateway_transactions_received{cluster=~\"$cluster\", namespace=~\"$namespace\"}[$__range]))"
           ],
           "extra_params": {
             "log_query": "\"Processing tx\""
@@ -547,22 +617,24 @@
           "description": "The number of transactions sent to mempool by type (over the selected time range)",
           "type": "stat",
           "exprs": [
-            "sum  by (tx_type) (increase(gateway_transactions_sent_to_mempool{cluster=~\"$cluster\", namespace=~\"$namespace\"}[$__range]))"
+            "sum by (tx_type) (increase(gateway_transactions_sent_to_mempool{cluster=~\"$cluster\", namespace=~\"$namespace\"}[$__range]))"
           ],
           "extra_params": {}
         },
         {
-          "title": "gateway_validate_stateful_tx_storage_micros",
-          "description": "Total time spent in storage operations in micros during stateful tx validation",
+          "title": "Gateway Validate Stateful Tx Storage Access Time",
+          "description": "Total time spent in storage operations during stateful tx validation",
           "type": "timeseries",
           "exprs": [
-            "histogram_quantile(0.50, sum by (le) (rate(gateway_validate_stateful_tx_storage_micros_bucket{cluster=~\"$cluster\", namespace=~\"$namespace\"}[5m])))",
-            "histogram_quantile(0.95, sum by (le) (rate(gateway_validate_stateful_tx_storage_micros_bucket{cluster=~\"$cluster\", namespace=~\"$namespace\"}[5m])))"
+            "histogram_quantile(0.50, sum by (le) (rate(gateway_validate_stateful_tx_storage_time_bucket{cluster=~\"$cluster\", namespace=~\"$namespace\"}[5m])))",
+            "histogram_quantile(0.95, sum by (le) (rate(gateway_validate_stateful_tx_storage_time_bucket{cluster=~\"$cluster\", namespace=~\"$namespace\"}[5m])))"
           ],
-          "extra_params": {}
+          "extra_params": {
+            "unit": "s"
+          }
         },
         {
-          "title": "gateway_validate_stateful_tx_storage_operations",
+          "title": "Gateway Validate Stateful Tx Storage Operations",
           "description": "Total number of storage operations during stateful tx validation",
           "type": "timeseries",
           "exprs": [
@@ -601,7 +673,7 @@
           "description": "Number of transactions dropped from the mempool by reason (over the selected time range)",
           "type": "stat",
           "exprs": [
-            "sum  by (drop_reason) (increase(mempool_transactions_dropped{cluster=~\"$cluster\", namespace=~\"$namespace\"}[$__range]))"
+            "sum by (drop_reason) (increase(mempool_transactions_dropped{cluster=~\"$cluster\", namespace=~\"$namespace\"}[$__range]))"
           ],
           "extra_params": {}
         },
@@ -682,13 +754,16 @@
     "L1 Provider": {
       "panels": [
         {
-          "title": "l1_message_scraper_seconds_since_last_successful_scrape",
-          "description": "Number of seconds since the last successful scrape of the L1 message scraper",
+          "title": "Seconds since last successful l1 event scrape",
+          "description": "The number of seconds since the last successful scrape of the L1 message scraper (assuming there was a scrape in the last 12 hours)",
           "type": "timeseries",
           "exprs": [
-            "l1_message_scraper_seconds_since_last_successful_scrape{cluster=~\"$cluster\", namespace=~\"$namespace\"}"
+            "time() - max_over_time((timestamp(increase(l1_message_scraper_success_count{cluster=~\"$cluster\", namespace=~\"$namespace\"}[12h])) != 0))[12h:])"
           ],
-          "extra_params": {}
+          "extra_params": {
+            "unit": "s",
+            "log_query": "\"BaseLayerError during scraping\""
+          }
         },
         {
           "title": "L1 Message Scraper Success Count",
@@ -723,6 +798,28 @@
     "ETH→STRK Rate & L1 Gas Price": {
       "panels": [
         {
+          "title": "Seconds since last successful L1 gas price scrape",
+          "description": "The number of seconds since the last successful scrape of the L1 gas price scraper (assuming there was a scrape in the last 12 hours)",
+          "type": "timeseries",
+          "exprs": [
+            "time() - max_over_time((timestamp(increase(l1_gas_price_scraper_success_count{cluster=~\"$cluster\", namespace=~\"$namespace\"}[12h])) != 0))[12h:])"
+          ],
+          "extra_params": {
+            "unit": "s"
+          }
+        },
+        {
+          "title": "Seconds since last successful ETH→STRK rate update",
+          "description": "The number of seconds since the last successful ETH→STRK rate update (assuming there was an update in the last 12 hours)",
+          "type": "timeseries",
+          "exprs": [
+            "time() - max_over_time((timestamp(increase(eth_to_strk_success_count{cluster=~\"$cluster\", namespace=~\"$namespace\"}[12h])) != 0))[12h:])"
+          ],
+          "extra_params": {
+            "unit": "s"
+          }
+        },
+        {
           "title": "ETH→STRK Rate Query Success (binary)",
           "description": "Indicates whether the ETH→STRK rate query succeeded (1m window) \nExpected to be 1 every 15 minutes.",
           "type": "timeseries",
@@ -743,7 +840,7 @@
           "extra_params": {}
         },
         {
-          "title": "eth_to_strk_rate",
+          "title": "ETH→STRK rate",
           "description": "ETH→STRK rate (divided by DEFAULT_ETH_TO_FRI_RATE=1000000000000000000000)",
           "type": "timeseries",
           "exprs": [
@@ -864,6 +961,34 @@
           "extra_params": {
             "unit": "percentunit"
           }
+        },
+        {
+          "title": "Transactions Per Block",
+          "description": "The number of transactions per block",
+          "type": "timeseries",
+          "exprs": [
+            "histogram_quantile(0.50, sum by (le) (rate(batcher_num_transaction_in_block_bucket{cluster=~\"$cluster\", namespace=~\"$namespace\"}[5m])))",
+            "histogram_quantile(0.95, sum by (le) (rate(batcher_num_transaction_in_block_bucket{cluster=~\"$cluster\", namespace=~\"$namespace\"}[5m])))"
+          ],
+          "extra_params": {}
+        },
+        {
+          "title": "Average Sierra Gas Usage in Block",
+          "description": "The average sierra gas usage in block (10m window)",
+          "type": "timeseries",
+          "exprs": [
+            "avg_over_time(batcher_sierra_gas_in_last_block{cluster=~\"$cluster\", namespace=~\"$namespace\"}[10m])/1000000000"
+          ],
+          "extra_params": {}
+        },
+        {
+          "title": "Average Proving Gas Usage in Block",
+          "description": "The average proving gas usage in block (10m window)",
+          "type": "timeseries",
+          "exprs": [
+            "avg_over_time(batcher_proving_gas_in_last_block{cluster=~\"$cluster\", namespace=~\"$namespace\"}[10m])/1000000000"
+          ],
+          "extra_params": {}
         }
       ],
       "collapsed": true
@@ -884,7 +1009,7 @@
         },
         {
           "title": "Number of Classes",
-          "description": "Number of classes, labeled by type (regular, deprecated)",
+          "description": "Number of classes, labeled by type (regular, deprecated) (10m window)",
           "type": "stat",
           "exprs": [
             "sum by (class_type) (increase(class_manager_n_classes{cluster=~\"$cluster\", namespace=~\"$namespace\"}[10m]))"
@@ -900,7 +1025,11 @@
             "histogram_quantile(0.95, sum by (le, class_object_type) (rate(class_manager_class_sizes_bucket{cluster=~\"$cluster\", namespace=~\"$namespace\"}[5m])))"
           ],
           "extra_params": {
-            "unit": "decmbytes"
+            "unit": "decmbytes",
+            "legends": [
+              "0.50 {{class_object_type}}",
+              "0.95 {{class_object_type}}"
+            ]
           }
         }
       ],
@@ -911,7 +1040,7 @@
         {
           "title": "Number of Connected Peers",
           "description": "The number of connected peers in Consensus P2P",
-          "type": "timeseries",
+          "type": "stat",
           "exprs": [
             "apollo_consensus_num_connected_peers{cluster=~\"$cluster\", namespace=~\"$namespace\"}"
           ],
@@ -919,105 +1048,156 @@
         },
         {
           "title": "Consensus Votes Number of Sent Messages",
-          "description": "The increase in the number of vote messages sent by consensus p2p (10m window)",
-          "type": "timeseries",
+          "description": "The increase in the number of vote messages sent by consensus p2p (over the selected time range)",
+          "type": "stat",
           "exprs": [
-            "increase(apollo_consensus_votes_num_sent_messages{cluster=~\"$cluster\", namespace=~\"$namespace\"}[10m])"
+            "increase(apollo_consensus_votes_num_sent_messages{cluster=~\"$cluster\", namespace=~\"$namespace\"}[$__range])"
           ],
           "extra_params": {}
         },
         {
           "title": "Consensus Votes Number of Received Messages",
-          "description": "The increase in the number of vote messages received by consensus p2p (10m window)",
-          "type": "timeseries",
+          "description": "The increase in the number of vote messages received by consensus p2p (over the selected time range)",
+          "type": "stat",
           "exprs": [
-            "increase(apollo_consensus_votes_num_received_messages{cluster=~\"$cluster\", namespace=~\"$namespace\"}[10m])"
+            "increase(apollo_consensus_votes_num_received_messages{cluster=~\"$cluster\", namespace=~\"$namespace\"}[$__range])"
           ],
           "extra_params": {}
         },
         {
-          "title": "apollo_consensus_votes_num_dropped_messages",
-          "description": "The number of messages dropped by the consensus p2p component over the Votes topic",
-          "type": "timeseries",
+          "title": "Consensus Votes Dropped Messages By Reason",
+          "description": "The number of dropped consensus votes messages, by reason (over the selected time range)",
+          "type": "stat",
           "exprs": [
-            "sum by (drop_reason) (apollo_consensus_votes_num_dropped_messages{cluster=~\"$cluster\", namespace=~\"$namespace\"})"
+            "sum by (drop_reason) (increase(apollo_consensus_votes_num_dropped_messages{cluster=~\"$cluster\", namespace=~\"$namespace\"}[$__range])) > 0"
           ],
           "extra_params": {}
         },
         {
           "title": "Consensus Conflicting Votes",
-          "description": "The increase in the number of conflicting votes (12h window)",
-          "type": "timeseries",
+          "description": "The increase in the number of conflicting votes (over the selected time range)",
+          "type": "stat",
           "exprs": [
-            "increase(consensus_conflicting_votes{cluster=~\"$cluster\", namespace=~\"$namespace\"}[12h])"
+            "increase(consensus_conflicting_votes{cluster=~\"$cluster\", namespace=~\"$namespace\"}[$__range])"
           ],
           "extra_params": {}
         },
         {
           "title": "Consensus Proposals Number of Sent Messages",
-          "description": "The increase in the number of proposal messages sent by consensus p2p (10m window)",
-          "type": "timeseries",
+          "description": "The increase in the number of proposal messages sent by consensus p2p (over the selected time range)",
+          "type": "stat",
           "exprs": [
-            "increase(apollo_consensus_proposals_num_sent_messages{cluster=~\"$cluster\", namespace=~\"$namespace\"}[10m])"
+            "increase(apollo_consensus_proposals_num_sent_messages{cluster=~\"$cluster\", namespace=~\"$namespace\"}[$__range])"
           ],
           "extra_params": {}
         },
         {
           "title": "Consensus Proposals Number of Received Messages",
-          "description": "The increase in the number of proposal messages received by consensus p2p (10m window)",
-          "type": "timeseries",
+          "description": "The increase in the number of proposal messages received by consensus p2p (over the selected time range)",
+          "type": "stat",
           "exprs": [
-            "increase(apollo_consensus_proposals_num_received_messages{cluster=~\"$cluster\", namespace=~\"$namespace\"}[10m])"
+            "increase(apollo_consensus_proposals_num_received_messages{cluster=~\"$cluster\", namespace=~\"$namespace\"}[$__range])"
           ],
           "extra_params": {}
         },
         {
-          "title": "apollo_consensus_proposals_num_dropped_messages",
-          "description": "The number of messages dropped by the consensus p2p component over the Proposals topic",
-          "type": "timeseries",
+          "title": "Consensus Proposals Dropped Messages By Reason",
+          "description": "The number of dropped consensus proposals messages, by reason (over the selected time range)",
+          "type": "stat",
           "exprs": [
-            "sum by (drop_reason) (apollo_consensus_proposals_num_dropped_messages{cluster=~\"$cluster\", namespace=~\"$namespace\"})"
+            "sum by (drop_reason) (increase(apollo_consensus_proposals_num_dropped_messages{cluster=~\"$cluster\", namespace=~\"$namespace\"}[$__range])) > 0"
           ],
           "extra_params": {}
         },
         {
-          "title": "apollo_consensus_network_events",
-          "description": "Network events counter by event type for consensus",
-          "type": "timeseries",
+          "title": "Consensus Network Events By Type",
+          "description": "Network events received by consensus p2p, by event type (over the selected time range)",
+          "type": "stat",
           "exprs": [
-            "sum by (event_type) (apollo_consensus_network_events{cluster=~\"$cluster\", namespace=~\"$namespace\"})"
+            "sum by (event_type) (increase(apollo_consensus_network_events{cluster=~\"$cluster\", namespace=~\"$namespace\"}[$__range])) > 0"
           ],
           "extra_params": {}
         }
       ],
       "collapsed": true
     },
-    "StateSyncP2p": {
+    "MempoolP2p": {
       "panels": [
         {
-          "title": "apollo_p2p_sync_num_connected_peers",
-          "description": "The number of connected peers to the p2p sync component",
-          "type": "stat",
+          "title": "apollo_mempool_p2p_num_connected_peers",
+          "description": "The number of connected peers to the mempool p2p component",
+          "type": "timeseries",
           "exprs": [
-            "apollo_p2p_sync_num_connected_peers{cluster=~\"$cluster\", namespace=~\"$namespace\"}"
+            "apollo_mempool_p2p_num_connected_peers{cluster=~\"$cluster\", namespace=~\"$namespace\"}"
           ],
           "extra_params": {}
         },
         {
-          "title": "apollo_p2p_sync_num_active_inbound_sessions",
-          "description": "The number of inbound sessions to the p2p sync component",
-          "type": "stat",
+          "title": "apollo_mempool_p2p_num_sent_messages",
+          "description": "The number of messages sent by the mempool p2p component",
+          "type": "timeseries",
           "exprs": [
-            "apollo_p2p_sync_num_active_inbound_sessions{cluster=~\"$cluster\", namespace=~\"$namespace\"}"
+            "apollo_mempool_p2p_num_sent_messages{cluster=~\"$cluster\", namespace=~\"$namespace\"}"
           ],
           "extra_params": {}
         },
         {
-          "title": "apollo_p2p_sync_num_active_outbound_sessions",
-          "description": "The number of outbound sessions to the p2p sync component",
+          "title": "apollo_mempool_p2p_num_received_messages",
+          "description": "The number of messages received by the mempool p2p component",
+          "type": "timeseries",
+          "exprs": [
+            "apollo_mempool_p2p_num_received_messages{cluster=~\"$cluster\", namespace=~\"$namespace\"}"
+          ],
+          "extra_params": {}
+        },
+        {
+          "title": "Mempool P2p Broadcasted Transaction Batch Size",
+          "description": "The number of transactions in batches broadcast by the mempool p2p component",
+          "type": "timeseries",
+          "exprs": [
+            "histogram_quantile(0.50, sum by (le) (rate(apollo_mempool_p2p_broadcasted_transaction_batch_size_bucket{cluster=~\"$cluster\", namespace=~\"$namespace\"}[5m])))",
+            "histogram_quantile(0.95, sum by (le) (rate(apollo_mempool_p2p_broadcasted_transaction_batch_size_bucket{cluster=~\"$cluster\", namespace=~\"$namespace\"}[5m])))"
+          ],
+          "extra_params": {}
+        },
+        {
+          "title": "apollo_mempool_p2p_network_events",
+          "description": "Network events counter by event type for mempool p2p",
+          "type": "timeseries",
+          "exprs": [
+            "sum by (event_type) (apollo_mempool_p2p_network_events{cluster=~\"$cluster\", namespace=~\"$namespace\"})"
+          ],
+          "extra_params": {}
+        },
+        {
+          "title": "apollo_mempool_p2p_num_dropped_messages",
+          "description": "The number of messages dropped by the mempool p2p component",
+          "type": "timeseries",
+          "exprs": [
+            "sum by (drop_reason) (apollo_mempool_p2p_num_dropped_messages{cluster=~\"$cluster\", namespace=~\"$namespace\"})"
+          ],
+          "extra_params": {}
+        }
+      ],
+      "collapsed": true
+    },
+    "Reverts": {
+      "panels": [
+        {
+          "title": "apollo_consensus_reverted_batcher_up_to_and_including",
+          "description": "The block number up to which the batcher has reverted",
           "type": "stat",
           "exprs": [
-            "apollo_p2p_sync_num_active_outbound_sessions{cluster=~\"$cluster\", namespace=~\"$namespace\"}"
+            "apollo_consensus_reverted_batcher_up_to_and_including{cluster=~\"$cluster\", namespace=~\"$namespace\"}"
+          ],
+          "extra_params": {}
+        },
+        {
+          "title": "apollo_state_sync_reverted_up_to_and_including",
+          "description": "The block number up to which the state sync has reverted",
+          "type": "stat",
+          "exprs": [
+            "apollo_state_sync_reverted_up_to_and_including{cluster=~\"$cluster\", namespace=~\"$namespace\"}"
           ],
           "extra_params": {}
         }
@@ -1080,66 +1260,6 @@
       ],
       "collapsed": true
     },
-    "MempoolP2p": {
-      "panels": [
-        {
-          "title": "apollo_mempool_p2p_num_connected_peers",
-          "description": "The number of connected peers to the mempool p2p component",
-          "type": "timeseries",
-          "exprs": [
-            "apollo_mempool_p2p_num_connected_peers{cluster=~\"$cluster\", namespace=~\"$namespace\"}"
-          ],
-          "extra_params": {}
-        },
-        {
-          "title": "apollo_mempool_p2p_num_sent_messages",
-          "description": "The number of messages sent by the mempool p2p component",
-          "type": "timeseries",
-          "exprs": [
-            "apollo_mempool_p2p_num_sent_messages{cluster=~\"$cluster\", namespace=~\"$namespace\"}"
-          ],
-          "extra_params": {}
-        },
-        {
-          "title": "apollo_mempool_p2p_num_received_messages",
-          "description": "The number of messages received by the mempool p2p component",
-          "type": "timeseries",
-          "exprs": [
-            "apollo_mempool_p2p_num_received_messages{cluster=~\"$cluster\", namespace=~\"$namespace\"}"
-          ],
-          "extra_params": {}
-        },
-        {
-          "title": "apollo_mempool_p2p_broadcasted_transaction_batch_size",
-          "description": "The number of transactions in batches broadcast by the mempool p2p component",
-          "type": "timeseries",
-          "exprs": [
-            "histogram_quantile(0.50, sum by (le) (rate(apollo_mempool_p2p_broadcasted_transaction_batch_size_bucket{cluster=~\"$cluster\", namespace=~\"$namespace\"}[5m])))",
-            "histogram_quantile(0.95, sum by (le) (rate(apollo_mempool_p2p_broadcasted_transaction_batch_size_bucket{cluster=~\"$cluster\", namespace=~\"$namespace\"}[5m])))"
-          ],
-          "extra_params": {}
-        },
-        {
-          "title": "apollo_mempool_p2p_network_events",
-          "description": "Network events counter by event type for mempool p2p",
-          "type": "timeseries",
-          "exprs": [
-            "sum by (event_type) (apollo_mempool_p2p_network_events{cluster=~\"$cluster\", namespace=~\"$namespace\"})"
-          ],
-          "extra_params": {}
-        },
-        {
-          "title": "apollo_mempool_p2p_num_dropped_messages",
-          "description": "The number of messages dropped by the mempool p2p component",
-          "type": "timeseries",
-          "exprs": [
-            "sum by (drop_reason) (apollo_mempool_p2p_num_dropped_messages{cluster=~\"$cluster\", namespace=~\"$namespace\"})"
-          ],
-          "extra_params": {}
-        }
-      ],
-      "collapsed": true
-    },
     "Tokio Runtime Metrics": {
       "panels": [
         {
@@ -1149,7 +1269,11 @@
           "exprs": [
             "tokio_total_busy_duration{cluster=~\"$cluster\", namespace=~\"$namespace\"}"
           ],
-          "extra_params": {}
+          "extra_params": {
+            "legends": [
+              "{{pod}}"
+            ]
+          }
         },
         {
           "title": "tokio_min_busy_duration",
@@ -1158,7 +1282,11 @@
           "exprs": [
             "tokio_min_busy_duration{cluster=~\"$cluster\", namespace=~\"$namespace\"}"
           ],
-          "extra_params": {}
+          "extra_params": {
+            "legends": [
+              "{{pod}}"
+            ]
+          }
         },
         {
           "title": "tokio_max_busy_duration",
@@ -1167,7 +1295,11 @@
           "exprs": [
             "tokio_max_busy_duration{cluster=~\"$cluster\", namespace=~\"$namespace\"}"
           ],
-          "extra_params": {}
+          "extra_params": {
+            "legends": [
+              "{{pod}}"
+            ]
+          }
         },
         {
           "title": "tokio_total_park_count",
@@ -1176,7 +1308,11 @@
           "exprs": [
             "tokio_total_park_count{cluster=~\"$cluster\", namespace=~\"$namespace\"}"
           ],
-          "extra_params": {}
+          "extra_params": {
+            "legends": [
+              "{{pod}}"
+            ]
+          }
         },
         {
           "title": "tokio_min_park_count",
@@ -1185,7 +1321,11 @@
           "exprs": [
             "tokio_min_park_count{cluster=~\"$cluster\", namespace=~\"$namespace\"}"
           ],
-          "extra_params": {}
+          "extra_params": {
+            "legends": [
+              "{{pod}}"
+            ]
+          }
         },
         {
           "title": "tokio_max_park_count",
@@ -1194,7 +1334,11 @@
           "exprs": [
             "tokio_max_park_count{cluster=~\"$cluster\", namespace=~\"$namespace\"}"
           ],
-          "extra_params": {}
+          "extra_params": {
+            "legends": [
+              "{{pod}}"
+            ]
+          }
         },
         {
           "title": "tokio_global_queue_depth",
@@ -1203,7 +1347,11 @@
           "exprs": [
             "tokio_global_queue_depth{cluster=~\"$cluster\", namespace=~\"$namespace\"}"
           ],
-          "extra_params": {}
+          "extra_params": {
+            "legends": [
+              "{{pod}}"
+            ]
+          }
         },
         {
           "title": "tokio_workers_count",
@@ -1212,7 +1360,11 @@
           "exprs": [
             "tokio_workers_count{cluster=~\"$cluster\", namespace=~\"$namespace\"}"
           ],
-          "extra_params": {}
+          "extra_params": {
+            "legends": [
+              "{{pod}}"
+            ]
+          }
         }
       ],
       "collapsed": true

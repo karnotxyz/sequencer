@@ -23,6 +23,7 @@ use apollo_l1_provider::metrics::{
     L1_MESSAGE_SCRAPER_REORG_DETECTED,
 };
 use apollo_mempool_p2p::metrics::MEMPOOL_P2P_NUM_CONNECTED_PEERS;
+use apollo_metrics::MetricCommon;
 use apollo_storage::metrics::{
     BATCHER_STORAGE_OPEN_READ_TRANSACTIONS,
     CLASS_MANAGER_STORAGE_OPEN_READ_TRANSACTIONS,
@@ -35,8 +36,8 @@ use crate::alert_scenarios::block_production_delay::{
     get_cende_write_blob_failure_once_alert,
     get_consensus_block_number_progress_is_slow_vec,
     get_consensus_p2p_peer_down_vec,
+    get_consensus_round_above_zero,
     get_consensus_round_above_zero_multiple_times_vec,
-    get_consensus_round_above_zero_vec,
 };
 use crate::alert_scenarios::block_production_halt::{
     get_batched_transactions_stuck_vec,
@@ -70,6 +71,7 @@ use crate::alert_scenarios::tps::{
     get_mempool_add_tx_idle,
 };
 use crate::alert_scenarios::transaction_delays::{
+    get_high_empty_blocks_ratio_alert_vec,
     get_http_server_avg_add_tx_latency_alert_vec,
     get_http_server_p95_add_tx_latency_alert_vec,
     get_mempool_p2p_peer_down_vec,
@@ -94,6 +96,9 @@ use crate::alerts::{
     EVALUATION_INTERVAL_SEC_DEFAULT,
     PENDING_DURATION_DEFAULT,
 };
+
+/// Alerts that depend on block time can use this value to define their rule.
+pub(crate) const BLOCK_TIME_SEC: f64 = 9.0;
 
 pub fn get_dev_alerts_json_path(alert_env_filtering: AlertEnvFiltering) -> String {
     format!("crates/apollo_dashboard/resources/dev_grafana_alerts_{alert_env_filtering}.json")
@@ -522,6 +527,7 @@ pub fn get_apollo_alerts(alert_env_filtering: AlertEnvFiltering) -> Alerts {
         get_consensus_l1_gas_price_provider_failure(),
         get_consensus_l1_gas_price_provider_failure_once(),
         get_consensus_p2p_disconnections(),
+        get_consensus_round_above_zero(),
         get_consensus_votes_num_sent_messages_alert(),
         get_eth_to_strk_error_count_alert(),
         get_gateway_add_tx_idle(),
@@ -550,7 +556,6 @@ pub fn get_apollo_alerts(alert_env_filtering: AlertEnvFiltering) -> Alerts {
     alerts.append(&mut get_consensus_block_number_stuck_vec());
     alerts.append(&mut get_consensus_p2p_not_enough_peers_for_quorum_vec());
     alerts.append(&mut get_consensus_p2p_peer_down_vec());
-    alerts.append(&mut get_consensus_round_above_zero_vec());
     alerts.append(&mut get_consensus_round_above_zero_multiple_times_vec());
     alerts.append(&mut get_consensus_round_high_vec());
     alerts.append(&mut get_eth_to_strk_success_count_alert_vec());
@@ -560,6 +565,7 @@ pub fn get_apollo_alerts(alert_env_filtering: AlertEnvFiltering) -> Alerts {
     alerts.append(&mut get_http_server_internal_error_ratio_vec());
     alerts.append(&mut get_gateway_low_successful_transaction_rate_vec());
     alerts.append(&mut get_http_server_p95_add_tx_latency_alert_vec());
+    alerts.append(&mut get_high_empty_blocks_ratio_alert_vec());
     alerts.append(&mut get_l1_gas_price_provider_insufficient_history_alert_vec());
     alerts.append(&mut get_l1_gas_price_scraper_success_count_alert_vec());
     alerts.append(&mut get_l1_message_scraper_no_successes_alert_vec());

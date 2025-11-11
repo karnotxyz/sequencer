@@ -2,7 +2,7 @@
 
 use std::str::FromStr;
 
-use apollo_state_reader::papyrus_state::PapyrusReader;
+use apollo_state_reader::apollo_state::ApolloReader;
 use blockifier::blockifier::config::{ContractClassManagerConfig, TransactionExecutorConfig};
 use blockifier::blockifier::transaction_executor::{
     BlockExecutionSummary,
@@ -79,7 +79,7 @@ pub struct PyBlockExecutor {
     pub tx_executor_config: TransactionExecutorConfig,
     pub chain_info: ChainInfo,
     pub versioned_constants: VersionedConstants,
-    pub tx_executor: Option<TransactionExecutor<StateReaderAndContractManager<PapyrusReader>>>,
+    pub tx_executor: Option<TransactionExecutor<StateReaderAndContractManager<ApolloReader>>>,
     /// `Send` trait is required for `pyclass` compatibility as Python objects must be threadsafe.
     pub storage: Box<dyn Storage + Send>,
     pub contract_class_manager: ContractClassManager,
@@ -339,6 +339,11 @@ impl PyBlockExecutor {
         self.versioned_constants.enable_casm_hash_migration = enable_casm_hash_migration;
     }
 
+    #[pyo3(signature = (block_casm_hash_v1_declares))]
+    pub fn set_block_casm_hash_v1_declares_in_vc(&mut self, block_casm_hash_v1_declares: bool) {
+        self.versioned_constants.block_casm_hash_v1_declares = block_casm_hash_v1_declares;
+    }
+
     #[pyo3(signature = (concurrency_config, contract_class_manager_config, os_config, path, max_state_diff_size, stack_size, min_sierra_version, enable_casm_hash_migration))]
     #[staticmethod]
     #[allow(clippy::too_many_arguments)]
@@ -394,20 +399,20 @@ impl PyBlockExecutor {
 impl PyBlockExecutor {
     pub fn tx_executor(
         &mut self,
-    ) -> &mut TransactionExecutor<StateReaderAndContractManager<PapyrusReader>> {
+    ) -> &mut TransactionExecutor<StateReaderAndContractManager<ApolloReader>> {
         self.tx_executor.as_mut().expect("Transaction executor should be initialized")
     }
 
     fn get_aligned_reader(
         &self,
         next_block_number: BlockNumber,
-    ) -> StateReaderAndContractManager<PapyrusReader> {
+    ) -> StateReaderAndContractManager<ApolloReader> {
         // Full-node storage must be aligned to the Python storage before initializing a reader.
         self.storage.validate_aligned(next_block_number.0);
-        let papyrus_reader = PapyrusReader::new(self.storage.reader().clone(), next_block_number);
+        let apollo_reader = ApolloReader::new(self.storage.reader().clone(), next_block_number);
 
         StateReaderAndContractManager {
-            state_reader: papyrus_reader,
+            state_reader: apollo_reader,
             contract_class_manager: self.contract_class_manager.clone(),
         }
     }

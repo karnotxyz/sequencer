@@ -111,7 +111,7 @@ use crate::execution::syscalls::hint_processor::EmitEventError;
 use crate::execution::syscalls::hint_processor::SyscallExecutionError;
 #[cfg(feature = "cairo_native")]
 use crate::execution::syscalls::vm_syscall_utils::SyscallExecutorBaseError;
-use crate::execution::syscalls::vm_syscall_utils::SyscallSelector;
+use crate::execution::syscalls::vm_syscall_utils::{SyscallSelector, SyscallUsage};
 use crate::fee::fee_checks::FeeCheckError;
 use crate::fee::fee_utils::{balance_to_big_uint, get_fee_by_gas_vector, GasVectorToL1GasForFee};
 use crate::fee::gas_usage::{
@@ -132,7 +132,11 @@ use crate::state::state_api::{State, StateReader};
 use crate::test_utils::contracts::FeatureContractTrait;
 use crate::test_utils::dict_state_reader::DictStateReader;
 use crate::test_utils::initial_test_state::{fund_account, test_state};
-use crate::test_utils::l1_handler::{l1_handler_set_value_and_revert, l1handler_tx};
+use crate::test_utils::l1_handler::{
+    l1_handler_set_value_and_revert,
+    l1handler_tx,
+    L1_HANDLER_SET_VALUE_ENTRY_POINT_SELECTOR,
+};
 use crate::test_utils::prices::Prices;
 use crate::test_utils::test_templates::{cairo_version, two_cairo_versions};
 use crate::test_utils::{
@@ -434,6 +438,23 @@ fn expected_fee_transfer_call_info(
         CairoVersion::Cairo0 => Prices::FeeTransfer(account_address, *fee_type).into(),
         CairoVersion::Cairo1(_) => ExecutionResources::default(),
     };
+    let mut syscalls_usage = HashMap::from([
+        (SyscallSelector::StorageRead, SyscallUsage::with_call_count(4)),
+        (SyscallSelector::StorageWrite, SyscallUsage::with_call_count(4)),
+        (SyscallSelector::EmitEvent, SyscallUsage::with_call_count(1)),
+    ]);
+
+    match cairo_version {
+        CairoVersion::Cairo0 => {
+            syscalls_usage
+                .insert(SyscallSelector::GetCallerAddress, SyscallUsage::with_call_count(1));
+        }
+        CairoVersion::Cairo1(_) => {
+            syscalls_usage
+                .insert(SyscallSelector::GetExecutionInfo, SyscallUsage::with_call_count(1));
+        }
+    }
+
     Some(CallInfo {
         call: expected_fee_transfer_call,
         execution: CallExecution {
@@ -457,6 +478,7 @@ fn expected_fee_transfer_call_info(
         },
         tracked_resource: expected_tracked_resource,
         builtin_counters,
+        syscalls_usage,
         ..Default::default()
     })
 }
@@ -691,6 +713,16 @@ fn test_invoke_tx(
         CairoVersion::Cairo0 => HashMap::from([(BuiltinName::range_check, 19)]),
         CairoVersion::Cairo1(_) => HashMap::from([(BuiltinName::range_check, 27)]),
     };
+    let syscalls_usage = match account_cairo_version {
+        CairoVersion::Cairo0 => HashMap::from([(
+            SyscallSelector::CallContract,
+            SyscallUsage { call_count: 1, linear_factor: 0 },
+        )]),
+        CairoVersion::Cairo1(_) => HashMap::from([
+            (SyscallSelector::GetExecutionInfo, SyscallUsage { call_count: 1, linear_factor: 0 }),
+            (SyscallSelector::CallContract, SyscallUsage { call_count: 1, linear_factor: 0 }),
+        ]),
+    };
     let expected_execute_call_info = Some(CallInfo {
         call: expected_execute_call,
         execution: CallExecution {
@@ -703,6 +735,7 @@ fn test_invoke_tx(
         inner_calls: expected_inner_calls,
         tracked_resource,
         builtin_counters,
+        syscalls_usage,
         ..Default::default()
     });
 
@@ -1787,12 +1820,20 @@ fn test_declare_redeposit_amount_regression() {
 }
 
 #[apply(cairo_version)]
-#[case(TransactionVersion::ZERO, CairoVersion::Cairo0, HashVersion::V2)]
-#[case(TransactionVersion::ONE, CairoVersion::Cairo0, HashVersion::V2)]
-#[case(TransactionVersion::TWO, CairoVersion::Cairo1(RunnableCairo1::Casm), HashVersion::V2)]
-#[case(TransactionVersion::THREE, CairoVersion::Cairo1(RunnableCairo1::Casm), HashVersion::V2)]
+#[case(TransactionVersion::ZERO, CairoVersion::Cairo0, None)]
+#[case(TransactionVersion::ONE, CairoVersion::Cairo0, None)]
+#[case(TransactionVersion::TWO, CairoVersion::Cairo1(RunnableCairo1::Casm), Some(HashVersion::V2))]
+#[case(
+    TransactionVersion::THREE,
+    CairoVersion::Cairo1(RunnableCairo1::Casm),
+    Some(HashVersion::V2)
+)]
 #[should_panic(expected = "DeclareTransactionCasmHashMissMatch")]
-#[case(TransactionVersion::THREE, CairoVersion::Cairo1(RunnableCairo1::Casm), HashVersion::V1)]
+#[case(
+    TransactionVersion::THREE,
+    CairoVersion::Cairo1(RunnableCairo1::Casm),
+    Some(HashVersion::V1)
+)]
 fn test_declare_tx(
     default_all_resource_bounds: ValidResourceBounds,
     cairo_version: CairoVersion,
@@ -1800,7 +1841,7 @@ fn test_declare_tx(
     #[case] empty_contract_version: CairoVersion,
     // Used only for V3+ transactions to check that we are blocking declare txs with V1 casm
     // hashes.
-    #[case] hash_version: HashVersion,
+    #[case] hash_version: Option<HashVersion>,
     #[values(false, true)] use_kzg_da: bool,
 ) {
     let account_cairo_version = cairo_version;
@@ -1811,6 +1852,10 @@ fn test_declare_tx(
     let chain_info = &block_context.chain_info;
     let state = &mut test_state(chain_info, BALANCE, &[(account, 1)]);
     let class_hash = empty_contract.get_class_hash();
+    let hash_version = match hash_version {
+        Some(hash_version) => hash_version,
+        None => HashVersion::V2,
+    };
     let compiled_class_hash = empty_contract.get_compiled_class_hash(&hash_version);
     let class_info = calculate_class_info_for_testing(empty_contract.get_class());
     let sender_address = account.get_instance_address(0);
@@ -2694,7 +2739,7 @@ fn test_l1_handler(#[values(false, true)] use_kzg_da: bool) {
             class_hash: Some(test_contract.get_class_hash()),
             code_address: None,
             entry_point_type: EntryPointType::L1Handler,
-            entry_point_selector: selector_from_name("l1_handler_set_value"),
+            entry_point_selector: *L1_HANDLER_SET_VALUE_ENTRY_POINT_SELECTOR,
             calldata: calldata.clone(),
             storage_address: contract_address,
             caller_address: ContractAddress::default(),
@@ -2719,6 +2764,10 @@ fn test_l1_handler(#[values(false, true)] use_kzg_da: bool) {
             .get_runnable_class()
             .tracked_resource(&versioned_constants.min_sierra_version_for_sierra_gas, None),
         builtin_counters: HashMap::from([(BuiltinName::range_check, 6)]),
+        syscalls_usage: HashMap::from([(
+            SyscallSelector::StorageWrite,
+            SyscallUsage { call_count: 1, linear_factor: 0 },
+        )]),
         ..Default::default()
     };
 

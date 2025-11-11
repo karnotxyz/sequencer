@@ -42,10 +42,15 @@ define_metrics!(
         MetricCounter { REJECTED_TRANSACTIONS, "batcher_rejected_transactions", "Counter of rejected transactions", init = 0 },
         MetricCounter { REVERTED_TRANSACTIONS, "batcher_reverted_transactions", "Counter of reverted transactions across all forks", init = 0 },
         MetricCounter { SYNCED_TRANSACTIONS, "batcher_synced_transactions", "Counter of synced transactions", init = 0 },
+        MetricHistogram { NUM_TRANSACTION_IN_BLOCK, "batcher_num_transaction_in_block", "Number of transactions in a block"},
 
+        MetricCounter { BATCHER_L1_PROVIDER_ERRORS, "batcher_l1_provider_errors", "Counter of L1 provider errors", init = 0 },
         MetricCounter { PRECONFIRMED_BLOCK_WRITTEN, "batcher_preconfirmed_block_written", "Counter of preconfirmed blocks written to storage", init = 0 },
         // Block close reason
         LabeledMetricCounter { BLOCK_CLOSE_REASON, "batcher_block_close_reason", "Number of blocks closed by reason", init = 0 , labels = BLOCK_CLOSE_REASON_LABELS},
+        // Block weights
+        MetricGauge { SIERRA_GAS_IN_LAST_BLOCK, "batcher_sierra_gas_in_last_block", "The sierra gas in the last block"},
+        MetricGauge { PROVING_GAS_IN_LAST_BLOCK, "batcher_proving_gas_in_last_block", "The proving gas in the last block"},
     },
 );
 
@@ -56,11 +61,18 @@ pub const LABEL_NAME_BLOCK_CLOSE_REASON: &str = "block_close_reason";
 pub enum BlockCloseReason {
     FullBlock,
     Deadline,
+    /// Block building finished because no new transactions are being executed and the configured
+    /// timeout passed.
+    IdleExecutionTimeout,
 }
 
 generate_permutation_labels! {
     BLOCK_CLOSE_REASON_LABELS,
     (LABEL_NAME_BLOCK_CLOSE_REASON, BlockCloseReason),
+}
+
+pub(crate) fn record_block_close_reason(reason: BlockCloseReason) {
+    BLOCK_CLOSE_REASON.increment(1, &[(LABEL_NAME_BLOCK_CLOSE_REASON, reason.into())]);
 }
 
 pub fn register_metrics(storage_height: BlockNumber) {
@@ -83,8 +95,13 @@ pub fn register_metrics(storage_height: BlockNumber) {
     REVERTED_TRANSACTIONS.register();
     SYNCED_TRANSACTIONS.register();
 
+    BATCHER_L1_PROVIDER_ERRORS.register();
     PRECONFIRMED_BLOCK_WRITTEN.register();
     BLOCK_CLOSE_REASON.register();
+    NUM_TRANSACTION_IN_BLOCK.register();
+
+    SIERRA_GAS_IN_LAST_BLOCK.register();
+    PROVING_GAS_IN_LAST_BLOCK.register();
 
     // Blockifier's metrics
     CALLS_RUNNING_NATIVE.register();

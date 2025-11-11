@@ -196,7 +196,7 @@ impl Default for BouncerWeights {
             n_txs: 600,
             state_diff_size: 4000,
             // NOTE: Must stay in sync with orchestrator_versioned_constants' max_block_size.
-            sierra_gas: GasAmount(5000000000),
+            sierra_gas: GasAmount(6000000000),
             proving_gas: GasAmount(6000000000),
         }
     }
@@ -322,7 +322,7 @@ impl CasmHashComputationData {
 /// Tracks which classes need migration from V1 to V2 compiled hashes and
 /// accumulates the estimated execution resources required to perform the migration.
 struct CasmHashMigrationData {
-    class_hashes_to_migrate: HashMap<ClassHash, CompiledClassHashV2ToV1>,
+    pub(crate) class_hashes_to_migrate: HashMap<ClassHash, CompiledClassHashV2ToV1>,
     resources: EstimatedExecutionResources,
 }
 
@@ -859,6 +859,13 @@ pub fn get_tx_weights<S: StateReader>(
         executed_class_hashes,
         versioned_constants,
     )?;
+    // Total state changes keys are the sum of marginal state changes keys and the
+    // migration state changes.
+    let mut total_state_changes_keys = StateChangesKeys {
+        compiled_class_hash_keys: migration_data.class_hashes_to_migrate.keys().cloned().collect(),
+        ..Default::default()
+    };
+    total_state_changes_keys.extend(state_changes_keys);
 
     let blake_opcode_gas = bouncer_config.blake_weight;
 
@@ -903,7 +910,7 @@ pub fn get_tx_weights<S: StateReader>(
         l1_gas: message_starknet_l1gas,
         message_segment_length: message_resources.message_segment_length,
         n_events: tx_resources.starknet_resources.archival_data.event_summary.n_events,
-        state_diff_size: get_onchain_data_segment_length(&state_changes_keys.count()),
+        state_diff_size: get_onchain_data_segment_length(&total_state_changes_keys.count()),
         sierra_gas: total_sierra_gas,
         n_txs: 1,
         proving_gas: total_proving_gas,
@@ -939,15 +946,21 @@ pub fn map_class_hash_to_casm_hash_computation_resources<S: StateReader>(
 // and number of visited leaves includes reads and writes.
 pub fn get_particia_update_resources(n_visited_storage_entries: usize) -> ExecutionResources {
     const TREE_HEIGHT_UPPER_BOUND: usize = 24;
-    let n_updates = n_visited_storage_entries * TREE_HEIGHT_UPPER_BOUND;
+    // TODO(Yoni, 1/5/2024): re-estimate this.
+    const STEPS_IN_TREE_PER_HEIGHT: usize = 16;
+    const PEDERSENS_PER_HEIGHT: usize = 1;
 
-    ExecutionResources {
-        // TODO(Yoni, 1/5/2024): re-estimate this.
-        n_steps: 32 * n_updates,
-        // For each Patricia update there are two hash calculations.
-        builtin_instance_counter: HashMap::from([(BuiltinName::pedersen, 2 * n_updates)]),
+    let resources_per_tree_access = ExecutionResources {
+        n_steps: TREE_HEIGHT_UPPER_BOUND * STEPS_IN_TREE_PER_HEIGHT,
+        builtin_instance_counter: HashMap::from([(
+            BuiltinName::pedersen,
+            TREE_HEIGHT_UPPER_BOUND * PEDERSENS_PER_HEIGHT,
+        )]),
         n_memory_holes: 0,
-    }
+    };
+
+    // Multiply by 2 since each storage entry is accessed in both the old and new tree.
+    &resources_per_tree_access * (n_visited_storage_entries * 2)
 }
 
 pub fn verify_tx_weights_within_max_capacity<S: StateReader>(

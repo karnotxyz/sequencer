@@ -20,10 +20,10 @@ use apollo_l1_gas_price_types::errors::{EthToStrkOracleClientError, L1GasPriceCl
 use apollo_l1_gas_price_types::L1GasPriceProviderClient;
 use apollo_protobuf::consensus::{ConsensusBlockInfo, ProposalFin, ProposalPart, TransactionBatch};
 use apollo_state_sync_types::communication::StateSyncClient;
-use apollo_time::time::{sleep_until, Clock, DateTime};
+use apollo_time::time::{Clock, ClockExt, DateTime};
 use futures::channel::mpsc;
 use futures::StreamExt;
-use starknet_api::block::{BlockHash, BlockNumber, GasPrice};
+use starknet_api::block::{BlockNumber, GasPrice};
 use starknet_api::consensus_transaction::InternalConsensusTransaction;
 use starknet_api::data_availability::L1DataAvailabilityMode;
 use starknet_api::transaction::TransactionHash;
@@ -182,7 +182,7 @@ pub(crate) async fn validate_proposal(
                     "validating proposal parts".to_string(),
                 ));
             }
-            _ = sleep_until(deadline, args.deps.clock.as_ref()) => {
+            _ = args.deps.clock.sleep_until(deadline) => {
                 batcher_abort_proposal(args.deps.batcher.as_ref(), args.proposal_id).await;
                 return Err(ValidateProposalError::ValidationTimeout(
                     "validating proposal parts".to_string(),
@@ -361,7 +361,7 @@ async fn await_second_proposal_part(
                 "waiting for second proposal part".to_string(),
             ))
         }
-        _ = sleep_until(deadline, clock) => {
+        _ = clock.sleep_until(deadline) => {
             Err(ValidateProposalError::ValidationTimeout(
                 "waiting for second proposal part".to_string(),
             ))
@@ -463,7 +463,7 @@ async fn handle_proposal_part(
                     unreachable!("Unexpected batcher status for fin: {status:?}");
                 }
             };
-            let batcher_block_id = BlockHash(response_id.state_diff_commitment.0.0);
+            let batcher_block_id = ProposalCommitment(response_id.state_diff_commitment.0.0);
 
             info!(
                 network_block_id = ?fin.proposal_commitment,
@@ -561,6 +561,8 @@ async fn batcher_abort_proposal(batcher: &dyn BatcherClient, proposal_id: Propos
                 return;
             }
 
+            // TODO(Dafna): Properly handle errors. Not all errors should be propagated as panics.
+            // We should have a way to report an error and continue to the next height.
             Err(BatcherClientError::BatcherError(e)) => {
                 panic!("Batcher failed to abort proposal {proposal_id:?}: {e:?}");
             }

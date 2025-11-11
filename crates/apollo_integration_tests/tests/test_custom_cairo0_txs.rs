@@ -14,21 +14,20 @@ use starknet_api::test_utils::invoke::rpc_invoke_tx;
 use starknet_api::transaction::fields::{ContractAddressSalt, TransactionSignature};
 use starknet_api::{calldata, felt};
 
-use crate::common::{end_to_end_flow, validate_tx_count, TestScenario};
+use crate::common::{end_to_end_flow, validate_tx_count, EndToEndFlowArgs, TestScenario};
 
 mod common;
 
 const CUSTOM_CAIRO_0_INVOKE_TX_COUNT: usize = 9;
 
-#[tokio::test]
+/// The test uses 3 threads: 1 for the test's main thread and 2 for the sequencers.
+#[tokio::test(flavor = "multi_thread", worker_threads = 3)]
 async fn custom_cairo0_txs() {
-    end_to_end_flow(
+    end_to_end_flow(EndToEndFlowArgs::new(
         TestIdentifier::EndToEndFlowTestCustomCairo0Txs,
         create_custom_cairo0_txs_scenario(),
         GasAmount(110000000),
-        false,
-        false,
-    )
+    ))
     .await
 }
 
