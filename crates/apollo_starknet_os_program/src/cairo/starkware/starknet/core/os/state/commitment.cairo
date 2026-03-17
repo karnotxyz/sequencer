@@ -38,9 +38,10 @@ struct StateEntry {
 func calculate_global_state_root{poseidon_ptr: PoseidonBuiltin*, range_check_ptr}(
     contract_state_root: felt, contract_class_root: felt
 ) -> (global_root: felt) {
-    if (contract_state_root == 0 and contract_class_root == 0) {
-        // The state is empty.
-        return (global_root=0);
+    if (contract_class_root == 0) {
+        // Backward compatibility: when the class tree is empty, the global state root is the
+        // contract state root.
+        return (global_root=contract_state_root);
     }
 
     tempvar elements: felt* = new (GLOBAL_STATE_VERSION, contract_state_root, contract_class_root);
