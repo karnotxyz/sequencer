@@ -12506,6 +12506,7 @@ dependencies = [
  "cairo-lang-runner",
  "cairo-lang-starknet-classes",
  "cairo-lang-utils",
+ "dashmap",
  "derive_more 2.1.1",
  "expect-test",
  "flate2",

@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 use std::fmt::Debug;
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
@@ -23,7 +23,12 @@ use crate::concurrency::versioned_state::{
 };
 use crate::concurrency::TxIndex;
 use crate::context::BlockContext;
-use crate::metrics::{CALLS_RUNNING_NATIVE, TOTAL_CALLS};
+use crate::metrics::{
+    record_transaction_executor_metrics,
+    TransactionExecutorMetrics,
+    CALLS_RUNNING_NATIVE,
+    TOTAL_CALLS,
+};
 use crate::state::cached_state::{ContractClassMapping, StateMaps, TransactionalState};
 use crate::state::state_api::{StateReader, UpdatableState};
 use crate::transaction::objects::{TransactionExecutionInfo, TransactionExecutionResult};
@@ -47,10 +52,10 @@ pub struct ExecutionTaskOutput {
 
 #[derive(Default)]
 pub struct ConcurrencyMetrics {
-    abort_counter: AtomicUsize,
-    abort_in_commit_counter: AtomicUsize,
-    execute_counter: AtomicUsize,
-    validate_counter: AtomicUsize,
+    abort_counter: AtomicU64,
+    abort_in_commit_counter: AtomicU64,
+    execute_counter: AtomicU64,
+    validate_counter: AtomicU64,
 }
 
 impl ConcurrencyMetrics {
@@ -66,13 +71,14 @@ impl ConcurrencyMetrics {
     pub fn count_validate(&self) {
         self.validate_counter.fetch_add(1, Ordering::Relaxed);
     }
-    pub fn get_metrics(&self) -> (usize, usize, usize, usize) {
-        (
-            self.abort_counter.load(Ordering::Relaxed),
-            self.abort_in_commit_counter.load(Ordering::Relaxed),
-            self.execute_counter.load(Ordering::Relaxed),
-            self.validate_counter.load(Ordering::Relaxed),
-        )
+    pub fn snapshot(&self) -> TransactionExecutorMetrics {
+        TransactionExecutorMetrics {
+            execution_attempts: self.execute_counter.load(Ordering::Relaxed),
+            validation_attempts: self.validate_counter.load(Ordering::Relaxed),
+            aborts: self.abort_counter.load(Ordering::Relaxed),
+            commit_phase_aborts: self.abort_in_commit_counter.load(Ordering::Relaxed),
+            ..Default::default()
+        }
     }
 }
 
@@ -419,14 +425,22 @@ impl<S: StateReader> WorkerExecutor<S> {
 
 impl<U: UpdatableState> WorkerExecutor<U> {
     pub fn commit_chunk_and_recover_block_state(&self, n_committed_txs: usize) -> U {
-        let (abort_counter, abort_in_commit_counter, execute_counter, validate_counter) =
-            self.metrics.get_metrics();
         let n_txs = self.get_n_txs();
+        let metrics = TransactionExecutorMetrics {
+            transactions: u64::try_from(n_txs).expect("transaction count should fit in u64"),
+            committed_transactions: u64::try_from(n_committed_txs)
+                .expect("committed transaction count should fit in u64"),
+            ..self.metrics.snapshot()
+        };
+        record_transaction_executor_metrics(metrics);
         log::debug!(
             "Concurrent execution done. Number of transactions: {n_txs}; Committed chunk size: \
-             {n_committed_txs}; Execute counter: {execute_counter}; Validate counter: \
-             {validate_counter}; Abort counter: {abort_counter}; Abort in commit counter: \
-             {abort_in_commit_counter}"
+             {n_committed_txs}; Execute counter: {}; Validate counter: {}; Abort counter: {}; Abort \
+             in commit counter: {}",
+            metrics.execution_attempts,
+            metrics.validation_attempts,
+            metrics.aborts,
+            metrics.commit_phase_aborts,
         );
 
         self.state.into_inner_state().commit_chunk_and_recover_block_state(n_committed_txs)

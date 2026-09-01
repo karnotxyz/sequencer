@@ -16,9 +16,10 @@ use starknet_types_core::hash::{Pedersen, StarkHash as CoreStarkHash};
 
 use crate::crypto::utils::PublicKey;
 use crate::hash::{HashOutput, PoseidonHash, StarkHash};
+use crate::hash_cache;
 use crate::serde_utils::{BytesAsHex, PrefixedBytesAsHex};
 use crate::transaction::fields::{Calldata, ContractAddressSalt};
-use crate::{impl_from_through_intermediate, StarknetApiError, StarknetApiResult};
+use crate::{StarknetApiError, StarknetApiResult, impl_from_through_intermediate};
 
 /// Felt.
 pub fn ascii_as_felt(ascii_str: &str) -> Result<Felt, StarknetApiError> {
@@ -269,9 +270,14 @@ pub fn calculate_contract_address(
     constructor_calldata: &Calldata,
     deployer_address: ContractAddress,
 ) -> Result<ContractAddress, StarknetApiError> {
-    let constructor_calldata_hash = Pedersen::hash_array(&constructor_calldata.0);
+    let constructor_calldata_hash = hash_cache::pedersen_array_get(&constructor_calldata.0)
+        .unwrap_or_else(|| {
+            let result = Pedersen::hash_array(&constructor_calldata.0);
+            hash_cache::pedersen_array_insert(&constructor_calldata.0, result);
+            result
+        });
     let contract_address_prefix = format!("0x{}", hex::encode(CONTRACT_ADDRESS_PREFIX));
-    let address = Pedersen::hash_array(&[
+    let values = [
         Felt::from_hex(contract_address_prefix.as_str()).map_err(|_| {
             StarknetApiError::OutOfRange { string: contract_address_prefix.clone() }
         })?,
@@ -279,7 +285,12 @@ pub fn calculate_contract_address(
         salt.0,
         class_hash.0,
         constructor_calldata_hash,
-    ]);
+    ];
+    let address = hash_cache::pedersen_array_get(&values).unwrap_or_else(|| {
+        let result = Pedersen::hash_array(&values);
+        hash_cache::pedersen_array_insert(&values, result);
+        result
+    });
     let (_, address) = address.div_rem(&L2_ADDRESS_UPPER_BOUND);
 
     ContractAddress::try_from(address)

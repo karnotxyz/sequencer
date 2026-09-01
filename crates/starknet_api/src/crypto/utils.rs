@@ -11,6 +11,7 @@ use starknet_types_core::hash::{Pedersen, Poseidon, StarkHash as CoreStarkHash};
 use thiserror::Error;
 
 use crate::hash::StarkHash;
+use crate::hash_cache;
 
 /// An error that can occur during cryptographic operations.
 
@@ -113,12 +114,20 @@ impl HashChain {
 
     // Returns the pedersen hash of the chained felts, hashed with the length of the chain.
     pub fn get_pedersen_hash(&self) -> StarkHash {
-        Pedersen::hash_array(self.elements.as_slice())
+        hash_cache::pedersen_array_get(self.elements.as_slice()).unwrap_or_else(|| {
+            let result = Pedersen::hash_array(self.elements.as_slice());
+            hash_cache::pedersen_array_insert(self.elements.as_slice(), result);
+            result
+        })
     }
 
     // Returns the poseidon hash of the chained felts.
     pub fn get_poseidon_hash(&self) -> StarkHash {
-        Poseidon::hash_array(self.elements.as_slice())
+        hash_cache::poseidon_array_get(self.elements.as_slice()).unwrap_or_else(|| {
+            let result = Poseidon::hash_array(self.elements.as_slice());
+            hash_cache::poseidon_array_insert(self.elements.as_slice(), result);
+            result
+        })
     }
 }
 

@@ -16,7 +16,7 @@ use starknet_api::transaction::TransactionVersion;
 use starknet_api::{contract_address, declare_tx_args, felt, invoke_tx_args, nonce, storage_key};
 use starknet_types_core::felt::Felt;
 
-use super::WorkerExecutor;
+use super::{ConcurrencyMetrics, WorkerExecutor};
 use crate::bouncer::Bouncer;
 use crate::concurrency::fee_utils::STORAGE_READ_SEQUENCER_BALANCE_INDICES;
 use crate::concurrency::scheduler::{Task, TransactionStatus};
@@ -880,4 +880,20 @@ fn test_worker_commit_phase_with_halt() {
         let result = execution_output.result.as_ref();
         assert!(!result.unwrap().is_reverted());
     }
+}
+
+#[test]
+fn concurrency_metrics_snapshot_has_named_counters() {
+    let metrics = ConcurrencyMetrics::default();
+    metrics.count_execute();
+    metrics.count_execute();
+    metrics.count_validate();
+    metrics.count_abort();
+    metrics.count_abort_in_commit();
+
+    let snapshot = metrics.snapshot();
+    assert_eq!(snapshot.execution_attempts, 2);
+    assert_eq!(snapshot.validation_attempts, 1);
+    assert_eq!(snapshot.aborts, 1);
+    assert_eq!(snapshot.commit_phase_aborts, 1);
 }

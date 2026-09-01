@@ -3,7 +3,8 @@ use starknet_types_core::felt::{Felt, NonZeroFelt};
 use starknet_types_core::hash::{Pedersen, StarkHash};
 
 use crate::abi::constants;
-use crate::core::{ContractAddress, EntryPointSelector, PatriciaKey, L2_ADDRESS_UPPER_BOUND};
+use crate::core::{ContractAddress, EntryPointSelector, L2_ADDRESS_UPPER_BOUND, PatriciaKey};
+use crate::hash_cache;
 use crate::state::StorageKey;
 
 #[cfg(test)]
@@ -12,13 +13,18 @@ mod test;
 
 /// A variant of eth-keccak that computes a value that fits in a Starknet field element.
 pub fn starknet_keccak(data: &[u8]) -> Felt {
+    if let Some(cached) = hash_cache::sn_keccak_get(data) {
+        return cached;
+    }
     let mut hasher = Keccak256::new();
     hasher.update(data);
     let mut result: [u8; 32] = hasher.finalize().into();
 
     // Truncate result to 250 bits.
     *result.first_mut().unwrap() &= 3;
-    Felt::from_bytes_be(&result)
+    let result = Felt::from_bytes_be(&result);
+    hash_cache::sn_keccak_insert(data, result);
+    result
 }
 
 /// Returns an entry point selector, given its name.
@@ -39,8 +45,13 @@ pub fn selector_from_name(entry_point_name: &str) -> EntryPointSelector {
 pub fn get_storage_var_address(storage_var_name: &str, args: &[Felt]) -> StorageKey {
     let storage_var_name_hash = starknet_keccak(storage_var_name.as_bytes());
 
-    let storage_key_hash =
-        args.iter().fold(storage_var_name_hash, |res, arg| Pedersen::hash(&res, arg));
+    let storage_key_hash = args.iter().fold(storage_var_name_hash, |res, arg| {
+        hash_cache::pedersen_pair_get(res, *arg).unwrap_or_else(|| {
+            let result = Pedersen::hash(&res, arg);
+            hash_cache::pedersen_pair_insert(res, *arg, result);
+            result
+        })
+    });
 
     let storage_key = storage_key_hash
         .mod_floor(&NonZeroFelt::from_raw(Felt::from(*L2_ADDRESS_UPPER_BOUND).to_raw()));

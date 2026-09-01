@@ -17,6 +17,13 @@ pub mod executable_transaction;
 pub mod execution_resources;
 pub mod execution_utils;
 pub mod hash;
+mod hash_cache;
+pub use hash_cache::{
+    DEFAULT_PEDERSEN_ARRAY_CACHE_CAPACITY, DEFAULT_PEDERSEN_PAIR_CACHE_CAPACITY,
+    DEFAULT_POSEIDON_ARRAY_CACHE_CAPACITY, DEFAULT_SN_KECCAK_CACHE_CAPACITY, HashCacheConfig,
+    HashCacheKind, HashCacheMetrics, configure_hash_cache, hash_cache_metrics,
+    set_hash_cache_enabled,
+};
 pub mod rpc_transaction;
 pub mod serde_utils;
 pub mod staking;

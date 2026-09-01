@@ -5,10 +5,11 @@ use sha3::{Digest, Keccak256};
 use starknet_types_core::felt::{Felt, FromStrError};
 use starknet_types_core::hash::{Poseidon, StarkHash as StarkHashTrait};
 
-use crate::core::{ContractAddress, EntryPointSelector, GlobalRoot, Nonce, GLOBAL_STATE_VERSION};
+use crate::core::{ContractAddress, EntryPointSelector, GLOBAL_STATE_VERSION, GlobalRoot, Nonce};
+use crate::hash_cache;
 use crate::serde_utils::bytes_from_hex_str;
-use crate::transaction::fields::Calldata;
 use crate::transaction::L1HandlerTransaction;
+use crate::transaction::fields::Calldata;
 
 pub type StarkHash = Felt;
 
@@ -30,11 +31,16 @@ pub struct PoseidonHash(pub Felt);
 
 /// Computes the first 250 bits of the Keccak256 hash, in order to fit into a field element.
 pub fn starknet_keccak_hash(input: &[u8]) -> Felt {
+    if let Some(cached) = hash_cache::sn_keccak_get(input) {
+        return cached;
+    }
     let mut keccak = Keccak256::default();
     keccak.update(input);
     let mut hashed_bytes: [u8; 32] = keccak.finalize().into();
     hashed_bytes[0] &= 0b00000011_u8; // Discard the six MSBs.
-    Felt::from_bytes_be(&hashed_bytes)
+    let result = Felt::from_bytes_be(&hashed_bytes);
+    hash_cache::sn_keccak_insert(input, result);
+    result
 }
 
 #[cfg(any(feature = "testing", test))]

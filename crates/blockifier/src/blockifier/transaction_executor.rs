@@ -15,6 +15,7 @@ use crate::bouncer::{Bouncer, BouncerWeights, CasmHashComputationData};
 use crate::concurrency::worker_logic::WorkerExecutor;
 use crate::concurrency::worker_pool::WorkerPool;
 use crate::context::BlockContext;
+use crate::metrics::{record_transaction_executor_metrics, TransactionExecutorMetrics};
 use crate::state::cached_state::{CachedState, CommitmentStateDiff, StateMaps, TransactionalState};
 use crate::state::compiled_class_hash_migration::CompiledClassHashMigrationUpdater;
 use crate::state::errors::StateError;
@@ -187,6 +188,7 @@ impl<S: StateReader> TransactionExecutor<S> {
         execution_deadline: Option<Instant>,
     ) -> Vec<TransactionExecutorResult<TransactionExecutionOutput>> {
         let mut results = Vec::new();
+        let mut execution_attempts = 0;
         for tx in txs {
             if let Some(deadline) = execution_deadline {
                 if Instant::now() > deadline {
@@ -194,6 +196,7 @@ impl<S: StateReader> TransactionExecutor<S> {
                     break;
                 }
             }
+            execution_attempts += 1;
             match self.execute(tx) {
                 Ok((tx_execution_info, state_diff)) => {
                     results.push(Ok((tx_execution_info, state_diff)))
@@ -202,6 +205,13 @@ impl<S: StateReader> TransactionExecutor<S> {
                 Err(error) => results.push(Err(error)),
             }
         }
+        record_transaction_executor_metrics(TransactionExecutorMetrics {
+            transactions: u64::try_from(txs.len()).expect("transaction count should fit in u64"),
+            committed_transactions: u64::try_from(results.len())
+                .expect("committed transaction count should fit in u64"),
+            execution_attempts,
+            ..Default::default()
+        });
         results
     }
 
