@@ -139,6 +139,44 @@ impl<S: StateReader> StateReader for CachedState<S> {
         Ok(*value)
     }
 
+    fn get_storage_many(
+        &self,
+        keys: &[(ContractAddress, StorageKey)],
+    ) -> StateResult<Vec<Felt>> {
+        let mut values = vec![None; keys.len()];
+        let mut misses = Vec::new();
+        {
+            let cache = self.cache.borrow();
+            for (index, (contract_address, key)) in keys.iter().copied().enumerate() {
+                if let Some(value) = cache.get_storage_at(contract_address, key) {
+                    values[index] = Some(*value);
+                } else {
+                    misses.push((index, contract_address, key));
+                }
+            }
+        }
+
+        if !misses.is_empty() {
+            let missing_keys = misses
+                .iter()
+                .map(|(_, contract_address, key)| (*contract_address, *key))
+                .collect::<Vec<_>>();
+            let missing_values = self.state.get_storage_many(&missing_keys)?;
+            assert_eq!(missing_values.len(), misses.len(), "StateReader bulk result length mismatch");
+
+            let mut cache = self.cache.borrow_mut();
+            for ((index, contract_address, key), value) in misses.into_iter().zip(missing_values) {
+                cache.set_storage_initial_value(contract_address, key, value);
+                values[index] = Some(value);
+            }
+        }
+
+        Ok(values
+            .into_iter()
+            .map(|value| value.expect("Every bulk storage read must be populated"))
+            .collect())
+    }
+
     fn get_nonce_at(&self, contract_address: ContractAddress) -> StateResult<Nonce> {
         let mut cache = self.cache.borrow_mut();
 

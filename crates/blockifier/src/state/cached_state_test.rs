@@ -82,6 +82,37 @@ fn get_and_set_storage_value() {
 }
 
 #[test]
+fn get_storage_many_preserves_order_and_cached_writes() {
+    let contract_address = contract_address!("0x100");
+    let first_key = storage_key!(0x10_u16);
+    let second_key = storage_key!(0x20_u16);
+    let first_value = felt!(1_u8);
+    let second_value = felt!(2_u8);
+    let written_value = felt!(3_u8);
+
+    let mut state = CachedState::from(DictStateReader {
+        storage_view: HashMap::from([
+            ((contract_address, first_key), first_value),
+            ((contract_address, second_key), second_value),
+        ]),
+        ..Default::default()
+    });
+    state.set_storage_at(contract_address, second_key, written_value).unwrap();
+
+    assert_eq!(
+        state
+            .get_storage_many(&[
+                (contract_address, second_key),
+                (contract_address, first_key),
+                (contract_address, first_key),
+            ])
+            .unwrap(),
+        vec![written_value, first_value, first_value]
+    );
+    assert_eq!(state.cache.borrow().initial_reads.storage.get(&(contract_address, first_key)), Some(&first_value));
+}
+
+#[test]
 fn cast_between_storage_mapping_types() {
     let empty_map: IndexMap<ContractAddress, IndexMap<StorageKey, Felt>> = IndexMap::default();
     assert_eq!(empty_map, IndexMap::from(StorageView::default()));

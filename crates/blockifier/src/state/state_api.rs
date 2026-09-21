@@ -30,6 +30,20 @@ pub trait StateReader {
         key: StorageKey,
     ) -> StateResult<Felt>;
 
+    /// Returns several storage values in input order.
+    ///
+    /// Readers with a shared cache or backing snapshot can override this to
+    /// amortize locking and lookup setup. The default preserves the ordinary
+    /// `get_storage_at` semantics for every existing reader.
+    fn get_storage_many(
+        &self,
+        keys: &[(ContractAddress, StorageKey)],
+    ) -> StateResult<Vec<Felt>> {
+        keys.iter()
+            .map(|(contract_address, key)| self.get_storage_at(*contract_address, *key))
+            .collect()
+    }
+
     /// Returns the nonce of the given contract instance.
     /// Default: 0 for an uninitialized contract address.
     fn get_nonce_at(&self, contract_address: ContractAddress) -> StateResult<Nonce>;
@@ -86,6 +100,13 @@ impl<T: StateReader + ?Sized> StateReader for Box<T> {
         key: StorageKey,
     ) -> StateResult<Felt> {
         self.as_ref().get_storage_at(contract_address, key)
+    }
+
+    fn get_storage_many(
+        &self,
+        keys: &[(ContractAddress, StorageKey)],
+    ) -> StateResult<Vec<Felt>> {
+        self.as_ref().get_storage_many(keys)
     }
 
     fn get_nonce_at(&self, contract_address: ContractAddress) -> StateResult<Nonce> {
