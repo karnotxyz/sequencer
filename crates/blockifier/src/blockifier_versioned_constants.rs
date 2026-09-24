@@ -840,8 +840,7 @@ impl SyscallGasCost {
     }
 }
 
-#[cfg_attr(any(test, feature = "testing", feature = "reexecution"), derive(Clone))]
-#[derive(Debug, Default, PartialEq)]
+#[derive(Clone, Debug, Default, PartialEq)]
 pub struct SyscallGasCosts {
     pub call_contract: SyscallGasCost,
     pub deploy: SyscallGasCost,
@@ -919,8 +918,8 @@ impl SyscallGasCosts {
     }
 }
 
-#[cfg_attr(any(test, feature = "testing", feature = "reexecution"), derive(Clone, Copy))]
-#[derive(Debug, Default, PartialEq)]
+#[cfg_attr(any(test, feature = "testing", feature = "reexecution"), derive(Copy))]
+#[derive(Clone, Debug, Default, PartialEq)]
 pub struct BaseGasCosts {
     pub step_gas_cost: u64,
     pub memory_hole_gas_cost: u64,
@@ -993,8 +992,7 @@ impl BuiltinGasCosts {
 }
 
 /// Gas cost constants. For more documentation see in core/os/constants.cairo.
-#[cfg_attr(any(test, feature = "testing", feature = "reexecution"), derive(Clone))]
-#[derive(Debug, Default, PartialEq)]
+#[derive(Clone, Debug, Default, PartialEq)]
 pub struct GasCosts {
     pub base: BaseGasCosts,
     pub builtins: BuiltinGasCosts,
@@ -1134,8 +1132,9 @@ impl GasCosts {
     }
 }
 
-#[cfg_attr(any(test, feature = "testing", feature = "reexecution"), derive(Clone))]
-#[derive(Debug, Default, PartialEq)]
+// Runtime chain policy overrides use Arc copy-on-write without requiring testing
+// or reexecution features. Cloning these value constants does not alter defaults.
+#[derive(Clone, Debug, Default, PartialEq)]
 pub struct OsConstants {
     pub gas_costs: GasCosts,
 
