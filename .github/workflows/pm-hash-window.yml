@@ -1,0 +1,32 @@
+name: PM experimental hash-window correctness
+
+on:
+  push:
+    branches: [codex/pm-hash-window-20260924]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: pm-hash-window-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  configured-and-default-window:
+    runs-on: blacksmith-8vcpu-ubuntu-2404
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@1.92.0
+      - uses: ./.github/actions/setup_native_deps
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: pm-hash-window-native
+      - name: Check configured window in preprocessing, proof facts and VM/Native syscalls
+        run: cargo test --locked -p blockifier --lib --features cairo_native configured_hash_window -- --test-threads=1
+      - name: Preserve default ten-block behavior
+        run: |
+          cargo test --locked -p blockifier --lib --features cairo_native execution::syscalls::syscall_tests::get_block_hash:: -- --test-threads=1
+          cargo test --locked -p blockifier --lib --features cairo_native test_pre_process_block -- --test-threads=1
+          cargo test --locked -p blockifier --lib --features cairo_native test_validate_proof_facts -- --test-threads=1

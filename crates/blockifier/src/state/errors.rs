@@ -19,6 +19,8 @@ pub enum StateError {
         constants::STORED_BLOCK_HASH_BUFFER
     )]
     OldBlockHashNotProvided,
+    #[error("A block hash must be provided for block number >= {buffer}.")]
+    OldBlockHashNotProvidedForBuffer { buffer: u8 },
     #[error("Cannot deploy contract at address 0.")]
     OutOfRangeContractAddress,
     #[error(transparent)]

@@ -118,3 +118,74 @@ fn negative_flow_block_number_out_of_range(runnable_version: RunnableCairo1) {
         "Unauthorized syscall get_block_hash on recent blocks in execution mode Validate."
     ));
 }
+
+#[cfg_attr(feature = "cairo_native", test_case(RunnableCairo1::Native, 49, 0, false; "native_before_window"))]
+#[cfg_attr(feature = "cairo_native", test_case(RunnableCairo1::Native, 50, 0, true; "native_at_window"))]
+#[cfg_attr(feature = "cairo_native", test_case(RunnableCairo1::Native, 100, 50, true; "native_last_allowed"))]
+#[cfg_attr(feature = "cairo_native", test_case(RunnableCairo1::Native, 100, 51, false; "native_too_recent"))]
+#[cfg_attr(feature = "cairo_native", test_case(RunnableCairo1::Native, 100, 90, false; "native_old_policy_key"))]
+#[test_case(RunnableCairo1::Casm, 49, 0, false; "vm_before_window")]
+#[test_case(RunnableCairo1::Casm, 50, 0, true; "vm_at_window")]
+#[test_case(RunnableCairo1::Casm, 100, 50, true; "vm_last_allowed")]
+#[test_case(RunnableCairo1::Casm, 100, 51, false; "vm_too_recent")]
+#[test_case(RunnableCairo1::Casm, 100, 90, false; "vm_old_policy_key")]
+fn configured_hash_window(
+    runnable_version: RunnableCairo1,
+    current: u64,
+    requested: u64,
+    allowed: bool,
+) {
+    use std::sync::Arc;
+
+    use crate::context::BlockContext;
+    use crate::execution::common_hints::ExecutionMode;
+    use crate::transaction::objects::{DeprecatedTransactionInfo, TransactionInfo};
+
+    let contract = FeatureContract::TestContract(CairoVersion::Cairo1(runnable_version));
+    let (mut state, _, hash) = initialize_state(contract);
+    let mut context = BlockContext::create_for_testing();
+    context.block_info.block_number = BlockNumber(current);
+    Arc::make_mut(&mut context.versioned_constants.os_constants).stored_block_hash_buffer = 50;
+    // An old-policy key may already exist after a window change. The syscall must
+    // reject it by age, not return its stored hash or silently replace it with zero.
+    state
+        .set_storage_at(
+            context
+                .versioned_constants
+                .os_constants
+                .os_contract_addresses
+                .block_hash_contract_address(),
+            StorageKey::from(requested),
+            hash,
+        )
+        .unwrap();
+    let call = CallEntryPoint {
+        entry_point_selector: selector_from_name("test_get_block_hash"),
+        calldata: calldata![Felt::from(requested), hash],
+        ..trivial_external_entry_point_new(contract)
+    };
+    let result =
+        call.clone().execute_directly_given_block_context(&mut state, context.clone()).unwrap();
+    assert_eq!(result.execution.cairo_native, runnable_version.is_cairo_native());
+    assert_eq!(result.execution.failed, !allowed);
+    if allowed {
+        assert_eq!(result.execution.retdata, retdata![hash]);
+    } else {
+        assert_eq!(
+            format_panic_data(&result.execution.retdata.0),
+            "0x426c6f636b206e756d626572206f7574206f662072616e6765 ('Block number out of range')"
+        );
+        let error = call
+            .execute_directly_given_tx_info(
+                &mut state,
+                TransactionInfo::Deprecated(DeprecatedTransactionInfo::default()),
+                Some(Arc::new(context)),
+                false,
+                ExecutionMode::Validate,
+            )
+            .unwrap_err();
+        assert!(error.to_string().contains(
+            "Unauthorized syscall get_block_hash on recent blocks in execution mode Validate."
+        ));
+    }
+}

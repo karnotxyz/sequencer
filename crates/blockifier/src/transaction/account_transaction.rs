@@ -24,7 +24,6 @@ use starknet_api::transaction::{constants, TransactionHash, TransactionVersion};
 use starknet_types_core::felt::Felt;
 
 use super::errors::ResourceBoundsError;
-use crate::abi::constants::STORED_BLOCK_HASH_BUFFER;
 use crate::blockifier_versioned_constants::OsConstants;
 use crate::context::{BlockContext, GasCounter, TransactionContext};
 use crate::execution::call_info::CallInfo;
@@ -238,16 +237,17 @@ impl AccountTransaction {
     fn validate_proof_block_number(
         proof_block_number: u64,
         current_block_number: BlockNumber,
+        stored_block_hash_buffer: u8,
     ) -> TransactionPreValidationResult<()> {
         // Proof block must be old enough to have a stored block hash.
-        // Stored block hashes are guaranteed only up to: current - STORED_BLOCK_HASH_BUFFER.
-        let max_allowed =
-            current_block_number.0.checked_sub(STORED_BLOCK_HASH_BUFFER).ok_or_else(|| {
-                TransactionPreValidationError::InvalidProofFacts(format!(
-                    "The current block number {current_block_number} is below the required \
-                     block-hash retention buffer: {STORED_BLOCK_HASH_BUFFER}."
-                ))
-            })?;
+        // Use the same versioned buffer as the get_block_hash syscall and block preprocessing.
+        let buffer = u64::from(stored_block_hash_buffer);
+        let max_allowed = current_block_number.0.checked_sub(buffer).ok_or_else(|| {
+            TransactionPreValidationError::InvalidProofFacts(format!(
+                "The current block number {current_block_number} is below the required block-hash \
+                 retention buffer: {stored_block_hash_buffer}."
+            ))
+        })?;
 
         if proof_block_number > max_allowed {
             return Err(TransactionPreValidationError::InvalidProofFacts(format!(
@@ -326,6 +326,7 @@ impl AccountTransaction {
         Self::validate_proof_block_number(
             proof_block_number,
             block_context.block_info.block_number,
+            os_constants.stored_block_hash_buffer,
         )?;
         Self::validate_proof_block_hash(proof_block_hash, proof_block_number, os_constants, state)?;
 

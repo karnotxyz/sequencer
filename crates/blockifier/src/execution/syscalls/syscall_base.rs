@@ -141,7 +141,18 @@ impl<'state> SyscallHandlerBase<'state> {
         // in any case; it is consistent with the OS implementation and safe (see `Validate` arm).
         let current_block_number = self.context.tx_context.block_context.block_info.block_number;
 
-        if !block_number_in_range(requested_block_number, current_block_number) {
+        let stored_block_hash_buffer = self
+            .context
+            .tx_context
+            .block_context
+            .versioned_constants
+            .os_constants
+            .stored_block_hash_buffer;
+        if !block_number_in_range_with_buffer(
+            requested_block_number,
+            current_block_number,
+            u64::from(stored_block_hash_buffer),
+        ) {
             // Requested block is too recent.
             match self.context.execution_mode {
                 ExecutionMode::Execute => {
@@ -513,13 +524,26 @@ pub(crate) fn should_reject_deploy(
 }
 
 /// Returns whether the given block number is within the range of stored block hashes
-/// relative to the current block number.
+/// relative to the current block number using the standard ten-block buffer.
+/// Execution uses the buffer from its versioned constants instead.
 pub fn block_number_in_range(
     requested_block_number: BlockNumber,
     current_block_number: BlockNumber,
 ) -> bool {
+    block_number_in_range_with_buffer(
+        requested_block_number,
+        current_block_number,
+        constants::STORED_BLOCK_HASH_BUFFER,
+    )
+}
+
+fn block_number_in_range_with_buffer(
+    requested_block_number: BlockNumber,
+    current_block_number: BlockNumber,
+    stored_block_hash_buffer: u64,
+) -> bool {
     current_block_number
         .0
-        .checked_sub(constants::STORED_BLOCK_HASH_BUFFER)
+        .checked_sub(stored_block_hash_buffer)
         .is_some_and(|oldest_allowed| requested_block_number.0 <= oldest_allowed)
 }

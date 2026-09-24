@@ -2366,6 +2366,38 @@ fn test_validate_proof_facts(
     }
 }
 
+#[rstest]
+#[case::last_allowed(50, true)]
+#[case::too_recent(49, false)]
+#[case::old_policy_key(10, false)]
+fn proof_facts_use_configured_hash_window(
+    default_all_resource_bounds: ValidResourceBounds,
+    #[case] age: u64,
+    #[case] allowed: bool,
+) {
+    let mut context = BlockContext::create_for_account_testing();
+    std::sync::Arc::make_mut(&mut context.versioned_constants.os_constants)
+        .stored_block_hash_buffer = 50;
+    let requested = CURRENT_BLOCK_NUMBER - age;
+    let mut facts: SnosProofFacts = create_valid_proof_facts_for_testing().try_into().unwrap();
+    facts.block_number = BlockNumber(requested);
+    facts.block_hash = test_block_hash(requested);
+    let account =
+        FeatureContract::AccountWithoutValidations(CairoVersion::Cairo1(RunnableCairo1::Casm));
+    let mut state = test_state(&context.chain_info, BALANCE, &[(account, 1_u16)]);
+    let tx = invoke_tx_with_default_flags(invoke_tx_args! {
+        sender_address: account.get_instance_address(0_u16),
+        resource_bounds: default_all_resource_bounds,
+        proof_facts: snos_to_proof_facts(facts),
+    });
+    let result = tx.perform_pre_validation_stage(&mut state, &context.to_tx_context(&tx));
+    if allowed {
+        assert_matches!(result, Ok(()));
+    } else {
+        assert_matches!(result, Err(TransactionPreValidationError::InvalidProofFacts(msg)) if msg.contains("is too recent"));
+    }
+}
+
 /// Test that changes in a cairo0 call that is part of a cairo1-reverted call tree are indeed
 /// reverted.
 #[rstest]

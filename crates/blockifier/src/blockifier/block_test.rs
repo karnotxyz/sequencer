@@ -50,3 +50,36 @@ fn test_pre_process_block() {
         format!("{}", error.unwrap_err())
     );
 }
+
+#[test]
+fn pre_process_block_uses_configured_hash_window() {
+    use crate::state::cached_state::CachedState;
+    use crate::state::errors::StateError;
+    use crate::test_utils::dict_state_reader::DictStateReader;
+
+    let mut state = CachedState::new(DictStateReader::default());
+    let mut os_constants = VersionedConstants::create_for_testing().os_constants;
+    std::sync::Arc::make_mut(&mut os_constants).stored_block_hash_buffer = 50;
+    assert!(pre_process_block(&mut state, None, BlockNumber(49), &os_constants).is_ok());
+    assert!(matches!(
+        pre_process_block(&mut state, None, BlockNumber(50), &os_constants),
+        Err(StateError::OldBlockHashNotProvidedForBuffer { buffer: 50 })
+    ));
+    let hash = felt!(66_u64);
+    pre_process_block(
+        &mut state,
+        Some(BlockHashAndNumber { number: BlockNumber(0), hash: BlockHash(hash) }),
+        BlockNumber(50),
+        &os_constants,
+    )
+    .unwrap();
+    assert_eq!(
+        state
+            .get_storage_at(
+                os_constants.os_contract_addresses.block_hash_contract_address(),
+                StorageKey::from(0_u64),
+            )
+            .unwrap(),
+        hash
+    );
+}
