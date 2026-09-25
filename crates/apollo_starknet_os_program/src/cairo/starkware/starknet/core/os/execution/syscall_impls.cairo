@@ -738,7 +738,7 @@ func execute_get_block_hash{
     let request_block_number = request.block_number;
     let current_block_number = block_context.block_info_for_execute.block_number;
 
-    // A block number is a u64. STORED_BLOCK_HASH_BUFFER is 10.
+    // A block number is a u64. STORED_BLOCK_HASH_BUFFER is 50 in this fork.
     // The following computations will not overflow.
     local is_block_number_in_block_hash_buffer;
     %{ IsBlockNumberInBlockHashBuffer %}

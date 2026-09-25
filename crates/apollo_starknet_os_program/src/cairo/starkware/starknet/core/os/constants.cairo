@@ -62,7 +62,7 @@ const ALIAS_CONTRACT_ADDRESS = 0x2;
 // Future reserved contract address.
 const RESERVED_CONTRACT_ADDRESS = 0x3;
 // The block number -> block hash mapping is written for the current block number minus this number.
-const STORED_BLOCK_HASH_BUFFER = 10;
+const STORED_BLOCK_HASH_BUFFER = 50;
 
 // Allowed virtual OS program hashes for client-side proving.
 const ALLOWED_VIRTUAL_OS_PROGRAM_HASHES_0 = (

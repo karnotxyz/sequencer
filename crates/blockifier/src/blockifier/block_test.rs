@@ -1,5 +1,3 @@
-use blockifier_test_utils::cairo_versions::{CairoVersion, RunnableCairo1};
-use blockifier_test_utils::contracts::FeatureContract;
 use starknet_api::block::{BlockHash, BlockHashAndNumber, BlockNumber};
 use starknet_api::felt;
 use starknet_api::state::StorageKey;
@@ -7,15 +5,13 @@ use starknet_api::state::StorageKey;
 use crate::abi::constants;
 use crate::blockifier::block::pre_process_block;
 use crate::blockifier_versioned_constants::VersionedConstants;
-use crate::context::ChainInfo;
+use crate::state::cached_state::CachedState;
 use crate::state::state_api::StateReader;
-use crate::test_utils::initial_test_state::test_state;
-use crate::test_utils::BALANCE;
+use crate::test_utils::dict_state_reader::DictStateReader;
 
 #[test]
 fn test_pre_process_block() {
-    let test_contract = FeatureContract::TestContract(CairoVersion::Cairo1(RunnableCairo1::Casm));
-    let mut state = test_state(&ChainInfo::create_for_testing(), BALANCE, &[(test_contract, 1)]);
+    let mut state = CachedState::new(DictStateReader::default());
     let os_constants = VersionedConstants::create_for_testing().os_constants;
 
     // Test the positive flow of pre_process_block inside the allowed block number interval
@@ -59,17 +55,18 @@ fn pre_process_block_uses_configured_hash_window() {
 
     let mut state = CachedState::new(DictStateReader::default());
     let mut os_constants = VersionedConstants::create_for_testing().os_constants;
-    std::sync::Arc::make_mut(&mut os_constants).stored_block_hash_buffer = 50;
-    assert!(pre_process_block(&mut state, None, BlockNumber(49), &os_constants).is_ok());
+    // Use a non-default window to exercise the custom-buffer error path.
+    std::sync::Arc::make_mut(&mut os_constants).stored_block_hash_buffer = 51;
+    assert!(pre_process_block(&mut state, None, BlockNumber(50), &os_constants).is_ok());
     assert!(matches!(
-        pre_process_block(&mut state, None, BlockNumber(50), &os_constants),
-        Err(StateError::OldBlockHashNotProvidedForBuffer { buffer: 50 })
+        pre_process_block(&mut state, None, BlockNumber(51), &os_constants),
+        Err(StateError::OldBlockHashNotProvidedForBuffer { buffer: 51 })
     ));
     let hash = felt!(66_u64);
     pre_process_block(
         &mut state,
         Some(BlockHashAndNumber { number: BlockNumber(0), hash: BlockHash(hash) }),
-        BlockNumber(50),
+        BlockNumber(51),
         &os_constants,
     )
     .unwrap();

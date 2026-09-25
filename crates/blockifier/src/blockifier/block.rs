@@ -12,7 +12,7 @@ pub mod block_test;
 
 // Block pre-processing.
 // Writes the hash of the (current_block_number - N) block under its block number in the dedicated
-// contract state, where N is the versioned stored_block_hash_buffer (normally ten).
+// contract state, where N is the versioned stored_block_hash_buffer.
 // NOTE: This function must remain idempotent since full nodes can call it for an already updated
 // block hash table.
 pub fn pre_process_block(

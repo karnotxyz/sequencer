@@ -122,7 +122,7 @@
         },
         "sierra_array_len_bound": 4294967296,
         "step_gas_cost": 100,
-        "stored_block_hash_buffer": 10,
+        "stored_block_hash_buffer": 50,
         "syscall_base_gas_cost": {
             "step_gas_cost": 100
         },
