@@ -26,6 +26,7 @@ jobs:
       - name: Scalar and bulk storage fast-path regressions
         run: cargo test --locked -p blockifier --lib --features cairo_native storage_read_fast_path -- --test-threads=1
       - name: Cached-state reads, diffs, commits and aborts
-        run: cargo test --locked -p blockifier --lib --features cairo_native state::cached_state_test:: -- --test-threads=1
+        run: |
+          cargo test --locked -p blockifier --lib --features cairo_native state::cached_state_test:: -- --test-threads=1
       - name: Preserve configured history-window behavior
         run: cargo test --locked -p blockifier --lib --features cairo_native configured_hash_window -- --test-threads=1
