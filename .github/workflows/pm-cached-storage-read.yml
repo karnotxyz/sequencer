@@ -27,6 +27,8 @@ jobs:
         run: cargo test --locked -p blockifier --lib --features cairo_native storage_read_fast_path -- --test-threads=1
       - name: Cached-state reads, diffs, commits and aborts
         run: |
-          cargo test --locked -p blockifier --lib --features cairo_native state::cached_state_test:: -- --test-threads=1
+          set -o pipefail
+          cargo test --locked -p blockifier --lib --features cairo_native state::cached_state::test:: -- --test-threads=1 | tee "$RUNNER_TEMP/pm-cached-state-tests.log"
+          grep -Eq 'test result: ok\. [1-9][0-9]* passed; 0 failed; 0 ignored;' "$RUNNER_TEMP/pm-cached-state-tests.log"
       - name: Preserve configured history-window behavior
         run: cargo test --locked -p blockifier --lib --features cairo_native configured_hash_window -- --test-threads=1
