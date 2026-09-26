@@ -128,53 +128,50 @@ impl<S: StateReader> StateReader for CachedState<S> {
     ) -> StateResult<Felt> {
         let mut cache = self.cache.borrow_mut();
 
-        if cache.get_storage_at(contract_address, key).is_none() {
-            let storage_value = self.state.get_storage_at(contract_address, key)?;
-            cache.set_storage_initial_value(contract_address, key, storage_value);
+        if let Some(value) = cache.get_storage_at(contract_address, key) {
+            return Ok(*value);
         }
 
-        let value = cache.get_storage_at(contract_address, key).unwrap_or_else(|| {
-            panic!("Cannot retrieve '{contract_address:?}' and '{key:?}' from the cache.")
-        });
-        Ok(*value)
+        let value = self.state.get_storage_at(contract_address, key)?;
+        cache.set_storage_initial_value(contract_address, key, value);
+        Ok(value)
     }
 
-    fn get_storage_many(
-        &self,
-        keys: &[(ContractAddress, StorageKey)],
-    ) -> StateResult<Vec<Felt>> {
-        let mut values = vec![None; keys.len()];
-        let mut misses = Vec::new();
+    fn get_storage_many(&self, keys: &[(ContractAddress, StorageKey)]) -> StateResult<Vec<Felt>> {
+        let mut values = vec![Felt::ZERO; keys.len()];
+        let mut missing_indices = Vec::new();
+        let mut missing_keys = Vec::new();
         {
             let cache = self.cache.borrow();
             for (index, (contract_address, key)) in keys.iter().copied().enumerate() {
                 if let Some(value) = cache.get_storage_at(contract_address, key) {
-                    values[index] = Some(*value);
+                    values[index] = *value;
                 } else {
-                    misses.push((index, contract_address, key));
+                    missing_indices.push(index);
+                    missing_keys.push((contract_address, key));
                 }
             }
         }
 
-        if !misses.is_empty() {
-            let missing_keys = misses
-                .iter()
-                .map(|(_, contract_address, key)| (*contract_address, *key))
-                .collect::<Vec<_>>();
+        if !missing_keys.is_empty() {
             let missing_values = self.state.get_storage_many(&missing_keys)?;
-            assert_eq!(missing_values.len(), misses.len(), "StateReader bulk result length mismatch");
+            // Validate before installing any initial reads or returning the zero placeholders.
+            assert_eq!(
+                missing_values.len(),
+                missing_keys.len(),
+                "StateReader bulk result length mismatch"
+            );
 
             let mut cache = self.cache.borrow_mut();
-            for ((index, contract_address, key), value) in misses.into_iter().zip(missing_values) {
+            for ((index, (contract_address, key)), value) in
+                missing_indices.into_iter().zip(missing_keys).zip(missing_values)
+            {
                 cache.set_storage_initial_value(contract_address, key, value);
-                values[index] = Some(value);
+                values[index] = value;
             }
         }
 
-        Ok(values
-            .into_iter()
-            .map(|value| value.expect("Every bulk storage read must be populated"))
-            .collect())
+        Ok(values)
     }
 
     fn get_nonce_at(&self, contract_address: ContractAddress) -> StateResult<Nonce> {

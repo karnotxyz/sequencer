@@ -1,0 +1,31 @@
+name: PM cached storage read correctness
+
+on:
+  push:
+    branches: [codex/pm-cached-storage-read-20260926]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: pm-cached-storage-read-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  cached-state-regressions:
+    runs-on: blacksmith-8vcpu-ubuntu-2404
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@1.92.0
+      - uses: ./.github/actions/setup_native_deps
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: pm-hash-window-native
+      - name: Scalar and bulk storage fast-path regressions
+        run: cargo test --locked -p blockifier --lib --features cairo_native storage_read_fast_path -- --test-threads=1
+      - name: Cached-state reads, diffs, commits and aborts
+        run: cargo test --locked -p blockifier --lib --features cairo_native state::cached_state_test:: -- --test-threads=1
+      - name: Preserve configured history-window behavior
+        run: cargo test --locked -p blockifier --lib --features cairo_native configured_hash_window -- --test-threads=1

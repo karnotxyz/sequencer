@@ -20,11 +20,12 @@ use starknet_api::{
 
 use crate::context::{BlockContext, ChainInfo};
 use crate::state::cached_state::*;
+use crate::state::state_api::MockStateReader;
+use crate::test_utils::BALANCE;
 use crate::test_utils::contracts::FeatureContractTrait;
 use crate::test_utils::dict_state_reader::DictStateReader;
 use crate::test_utils::initial_test_state::test_state;
-use crate::test_utils::BALANCE;
-use crate::transaction::test_utils::{default_all_resource_bounds, run_invoke_tx, STORAGE_WRITE};
+use crate::transaction::test_utils::{STORAGE_WRITE, default_all_resource_bounds, run_invoke_tx};
 const CONTRACT_ADDRESS: &str = "0x100";
 
 fn set_initial_state_values(
@@ -109,7 +110,109 @@ fn get_storage_many_preserves_order_and_cached_writes() {
             .unwrap(),
         vec![written_value, first_value, first_value]
     );
-    assert_eq!(state.cache.borrow().initial_reads.storage.get(&(contract_address, first_key)), Some(&first_value));
+    assert_eq!(
+        state.cache.borrow().initial_reads.storage.get(&(contract_address, first_key)),
+        Some(&first_value)
+    );
+}
+
+#[test]
+fn storage_read_fast_path_caches_initial_value_and_prioritizes_writes() {
+    let address = contract_address!("0x100");
+    let key = storage_key!(0x10_u16);
+    let mut reader = MockStateReader::new();
+    reader
+        .expect_get_storage_at()
+        .withf(move |a, k| *a == address && *k == key)
+        .times(1)
+        .returning(|_, _| Ok(Felt::ONE));
+    let mut state = CachedState::from(reader);
+    assert_eq!(state.get_storage_at(address, key).unwrap(), Felt::ONE);
+    assert_eq!(state.get_storage_at(address, key).unwrap(), Felt::ONE);
+    state.set_storage_at(address, key, Felt::ZERO).unwrap();
+    assert_eq!(state.get_storage_at(address, key).unwrap(), Felt::ZERO);
+    assert_eq!(state.cache.borrow().initial_reads.storage.get(&(address, key)), Some(&Felt::ONE));
+}
+
+#[test]
+fn storage_read_fast_path_does_not_cache_errors() {
+    let address = contract_address!("0x100");
+    let key = storage_key!(0x10_u16);
+    let mut reader = MockStateReader::new();
+    reader
+        .expect_get_storage_at()
+        .times(2)
+        .returning(|_, _| Err(StateError::StateReadError("unavailable".into())));
+    let state = CachedState::from(reader);
+    for _ in 0..2 {
+        assert_matches!(state.get_storage_at(address, key), Err(StateError::StateReadError(_)));
+    }
+    assert!(state.cache.borrow().initial_reads.storage.is_empty());
+}
+
+#[test]
+fn storage_read_fast_path_bulk_keeps_duplicate_misses_and_contract_identity() {
+    let first = (contract_address!("0x100"), storage_key!(0x10_u16));
+    let second = (contract_address!("0x200"), first.1);
+    let mut reader = MockStateReader::new();
+    reader
+        .expect_get_storage_many()
+        .withf(move |keys| keys == [first, second, first])
+        .times(1)
+        .returning(|_| Ok(vec![Felt::ONE, Felt::ZERO, Felt::ONE]));
+    let state = CachedState::from(reader);
+    assert_eq!(
+        state.get_storage_many(&[first, second, first]).unwrap(),
+        vec![Felt::ONE, Felt::ZERO, Felt::ONE]
+    );
+    assert_eq!(state.get_storage_many(&[second, first]).unwrap(), vec![Felt::ZERO, Felt::ONE]);
+    assert_eq!(
+        state.cache.borrow().initial_reads.storage,
+        HashMap::from([(first, Felt::ONE), (second, Felt::ZERO)])
+    );
+}
+
+#[test]
+fn storage_read_fast_path_bulk_empty_and_written_reads_skip_backend() {
+    let address = contract_address!("0x100");
+    let key = storage_key!(0x10_u16);
+    let mut state = CachedState::from(MockStateReader::new());
+    state.set_storage_at(address, key, Felt::ONE).unwrap();
+    assert!(state.get_storage_many(&[]).unwrap().is_empty());
+    assert_eq!(state.get_storage_many(&[(address, key); 2]).unwrap(), vec![Felt::ONE; 2]);
+    assert!(state.cache.borrow().initial_reads.storage.is_empty());
+}
+
+#[test]
+fn storage_read_fast_path_bulk_error_preserves_existing_cache_without_partial_reads() {
+    let address = contract_address!("0x100");
+    let cached_key = storage_key!(0x10_u16);
+    let missing_key = storage_key!(0x20_u16);
+    let mut reader = MockStateReader::new();
+    reader
+        .expect_get_storage_many()
+        .withf(move |keys| keys == [(address, missing_key)])
+        .times(1)
+        .returning(|_| Err(StateError::StateReadError("unavailable".into())));
+    let mut state = CachedState::from(reader);
+    state.set_storage_at(address, cached_key, Felt::ONE).unwrap();
+    assert_matches!(
+        state.get_storage_many(&[(address, cached_key), (address, missing_key)]),
+        Err(StateError::StateReadError(_))
+    );
+    assert!(state.cache.borrow().initial_reads.storage.is_empty());
+    assert_eq!(state.get_storage_at(address, cached_key).unwrap(), Felt::ONE);
+}
+
+#[rstest]
+#[case(vec![])]
+#[case(vec![Felt::ONE, Felt::ONE])]
+#[should_panic(expected = "StateReader bulk result length mismatch")]
+fn storage_read_fast_path_bulk_rejects_wrong_result_length(#[case] response: Vec<Felt>) {
+    let mut reader = MockStateReader::new();
+    reader.expect_get_storage_many().times(1).return_once(move |_| Ok(response));
+    let state = CachedState::from(reader);
+    let _ = state.get_storage_many(&[(contract_address!("0x100"), storage_key!(0x10_u16))]);
 }
 
 #[test]
