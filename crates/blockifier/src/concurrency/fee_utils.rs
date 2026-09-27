@@ -1,3 +1,5 @@
+use std::collections::HashMap;
+
 use num_traits::ToPrimitive;
 use starknet_api::core::ContractAddress;
 use starknet_api::transaction::fields::Fee;
@@ -128,7 +130,7 @@ pub fn add_fee_to_sequencer_balance(
     let (sequencer_balance_key_low, sequencer_balance_key_high) =
         get_sequencer_balance_keys(block_context);
     let writes = StateMaps {
-        storage: crate::state::cached_state::StorageMap::from_iter([
+        storage: HashMap::from([
             ((fee_token_address, sequencer_balance_key_low), Felt::from(new_value_low)),
             ((fee_token_address, sequencer_balance_key_high), Felt::from(new_value_high)),
         ]),

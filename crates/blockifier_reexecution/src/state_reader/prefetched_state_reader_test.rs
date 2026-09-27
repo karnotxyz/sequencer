@@ -78,7 +78,7 @@ async fn test_simulate_and_get_initial_reads() {
     .unwrap();
 
     let expected = StateMaps {
-        storage: blockifier::state::cached_state::StorageMap::from_iter([
+        storage: HashMap::from([
             ((contract_address!("0xabc"), storage_key!("0x10")), felt!("0x42")),
             ((contract_address!("0xabc"), storage_key!("0x20")), felt!("0x0")),
         ]),
@@ -106,7 +106,7 @@ async fn test_simulate_and_get_initial_reads() {
         "declared_contracts": [{"class_hash": "0xdef", "is_declared": true}]
     }),
     StateMaps {
-        storage: blockifier::state::cached_state::StorageMap::from_iter([
+        storage: HashMap::from([
             ((contract_address!("0xabc"), storage_key!("0x10")), felt!("0x42")),
             ((contract_address!("0xabc"), storage_key!("0x20")), felt!("0x0")),
         ]),

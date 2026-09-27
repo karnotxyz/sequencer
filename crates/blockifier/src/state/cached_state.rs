@@ -65,7 +65,7 @@ impl<S: StateReader> CachedState<S> {
             assert_eq!(value, local_contract_cache_updates.contains_key(&key));
         }
         let mut cache = self.cache.borrow_mut();
-        cache.writes.extend(write_updates);
+        cache.writes.extend_public(write_updates);
         self.class_hash_to_class.get_mut().extend(local_contract_cache_updates);
     }
 
@@ -326,32 +326,14 @@ impl Default for CachedState<crate::test_utils::dict_state_reader::DictStateRead
 #[cfg(feature = "reexecution")]
 impl<S: StateReader> CachedState<S> {
     pub fn get_initial_reads(&self) -> StateResult<StateMaps> {
-        Ok(self.cache.borrow().initial_reads.clone())
+        Ok(self.cache.borrow().initial_reads.clone().into_public())
     }
 }
 
 pub type StorageEntry = (ContractAddress, StorageKey);
 
-/// Full-key storage table. The opt-in hasher changes lookup cost, not storage identity or hashing
-/// used by commitments. Random per-table seeds are retained; iteration order is unspecified.
-#[cfg(feature = "fast_storage_hash")]
-pub type StorageMap = HashMap<StorageEntry, Felt, ahash::RandomState>;
-#[cfg(not(feature = "fast_storage_hash"))]
-pub type StorageMap = HashMap<StorageEntry, Felt>;
-
-pub(crate) fn storage_map_from_std(map: HashMap<StorageEntry, Felt>) -> StorageMap {
-    #[cfg(feature = "fast_storage_hash")]
-    {
-        map.into_iter().collect()
-    }
-    #[cfg(not(feature = "fast_storage_hash"))]
-    {
-        map
-    }
-}
-
 #[derive(Debug, Default, derive_more::IntoIterator)]
-pub struct StorageView(pub StorageMap);
+pub struct StorageView(pub HashMap<StorageEntry, Felt>);
 
 /// Converts a `CachedState`'s storage mapping into a `StateDiff`'s storage mapping.
 impl From<StorageView> for IndexMap<ContractAddress, IndexMap<StorageKey, Felt>> {
@@ -377,7 +359,7 @@ pub struct StateMaps {
     pub class_hashes: HashMap<ContractAddress, ClassHash>,
     // TODO(Yoni): consider changing type to HashMap<ContractAddress, HashMap<StorageKey, Felt>>.
     #[cfg_attr(feature = "transaction_serde", serde(with = "storage_map_serializer"))]
-    pub storage: StorageMap,
+    pub storage: HashMap<StorageEntry, Felt>,
     pub compiled_class_hashes: HashMap<ClassHash, CompiledClassHash>,
     pub declared_contracts: HashMap<ClassHash, bool>,
 }
@@ -393,11 +375,11 @@ mod storage_map_serializer {
     use starknet_api::state::StorageKey;
     use starknet_types_core::felt::Felt;
 
-    use super::StorageMap as FlatStorageMap;
+    use super::StorageEntry;
 
     type StorageMap = HashMap<ContractAddress, HashMap<StorageKey, Felt>>;
 
-    pub fn serialize<S>(map: &FlatStorageMap, serializer: S) -> Result<S::Ok, S::Error>
+    pub fn serialize<S>(map: &HashMap<StorageEntry, Felt>, serializer: S) -> Result<S::Ok, S::Error>
     where
         S: Serializer,
     {
@@ -408,7 +390,7 @@ mod storage_map_serializer {
         serde::Serialize::serialize(&nested_map, serializer)
     }
 
-    pub fn deserialize<'de, D>(deserializer: D) -> Result<FlatStorageMap, D::Error>
+    pub fn deserialize<'de, D>(deserializer: D) -> Result<HashMap<StorageEntry, Felt>, D::Error>
     where
         D: Deserializer<'de>,
     {
@@ -421,6 +403,16 @@ mod storage_map_serializer {
 }
 
 impl StateMaps {
+    #[cfg(not(feature = "fast_storage_hash"))]
+    fn extend_public(&mut self, other: &Self) {
+        self.extend(other);
+    }
+
+    #[cfg(not(feature = "fast_storage_hash"))]
+    pub(crate) fn into_public(self) -> Self {
+        self
+    }
+
     pub fn extend(&mut self, other: &Self) {
         self.nonces.extend(&other.nonces);
         self.class_hashes.extend(&other.class_hashes);
@@ -482,17 +474,102 @@ impl StateMaps {
     }
 }
 
-/// Caches read and write requests.
-/// The tracked changes are needed for block state commitment.
+#[cfg(not(feature = "fast_storage_hash"))]
+pub(crate) type CachedStateMaps = StateMaps;
 
+/// Keep the experimental hasher private: exported state and proving interfaces retain std maps.
+#[cfg(feature = "fast_storage_hash")]
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub(crate) struct CachedStateMaps {
+    pub(crate) nonces: HashMap<ContractAddress, Nonce>,
+    pub(crate) class_hashes: HashMap<ContractAddress, ClassHash>,
+    pub(crate) storage: HashMap<StorageEntry, Felt, ahash::RandomState>,
+    pub(crate) compiled_class_hashes: HashMap<ClassHash, CompiledClassHash>,
+    pub(crate) declared_contracts: HashMap<ClassHash, bool>,
+}
+
+#[cfg(feature = "fast_storage_hash")]
+impl From<StateMaps> for CachedStateMaps {
+    fn from(state: StateMaps) -> Self {
+        Self {
+            nonces: state.nonces,
+            class_hashes: state.class_hashes,
+            storage: state.storage.into_iter().collect(),
+            compiled_class_hashes: state.compiled_class_hashes,
+            declared_contracts: state.declared_contracts,
+        }
+    }
+}
+
+#[cfg(feature = "fast_storage_hash")]
+impl CachedStateMaps {
+    fn extend_public(&mut self, other: &StateMaps) {
+        self.nonces.extend(&other.nonces);
+        self.class_hashes.extend(&other.class_hashes);
+        self.storage.extend(&other.storage);
+        self.compiled_class_hashes.extend(&other.compiled_class_hashes);
+        self.declared_contracts.extend(&other.declared_contracts);
+    }
+
+    fn extend(&mut self, other: &Self) {
+        self.nonces.extend(&other.nonces);
+        self.class_hashes.extend(&other.class_hashes);
+        self.storage.extend(&other.storage);
+        self.compiled_class_hashes.extend(&other.compiled_class_hashes);
+        self.declared_contracts.extend(&other.declared_contracts);
+    }
+
+    fn get_contract_addresses(&self) -> HashSet<ContractAddress> {
+        let mut addresses: HashSet<_> = self.storage.keys().map(|slot| slot.0).collect();
+        addresses.extend(self.nonces.keys());
+        addresses.extend(self.class_hashes.keys());
+        addresses
+    }
+
+    fn diff(&self, initial: &Self) -> StateMaps {
+        StateMaps {
+            nonces: strict_subtract_mappings(&self.nonces, &initial.nonces),
+            class_hashes: strict_subtract_mappings(&self.class_hashes, &initial.class_hashes),
+            storage: self
+                .storage
+                .iter()
+                .filter(|(key, value)| {
+                    initial.storage.get(key).expect(crate::utils::STRICT_SUBTRACT_MAPPING_ERROR)
+                        != *value
+                })
+                .map(|(&key, &value)| (key, value))
+                .collect(),
+            compiled_class_hashes: strict_subtract_mappings(
+                &self.compiled_class_hashes,
+                &initial.compiled_class_hashes,
+            ),
+            declared_contracts: subtract_mappings(
+                &self.declared_contracts,
+                &initial.declared_contracts,
+            ),
+        }
+    }
+
+    pub(crate) fn into_public(self) -> StateMaps {
+        StateMaps {
+            nonces: self.nonces,
+            class_hashes: self.class_hashes,
+            storage: self.storage.into_iter().collect(),
+            compiled_class_hashes: self.compiled_class_hashes,
+            declared_contracts: self.declared_contracts,
+        }
+    }
+}
+
+/// Caches read and write requests, including the changes needed for block state commitment.
 // Invariant: keys cannot be deleted from fields (only used internally by the cached state).
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct StateCache {
     // Reader's cached information; initial values, read before any write operation (per cell).
-    pub(crate) initial_reads: StateMaps,
+    pub(crate) initial_reads: CachedStateMaps,
 
     // Writer's cached information.
-    pub(crate) writes: StateMaps,
+    pub(crate) writes: CachedStateMaps,
 }
 
 impl StateCache {
@@ -547,7 +624,7 @@ impl StateCache {
     pub fn extended_state_diff(&self) -> StateMaps {
         let mut reads = self.initial_reads.clone();
         reads.extend(&self.writes);
-        reads
+        reads.into_public()
     }
 
     fn declare_contract(&mut self, class_hash: ClassHash) {
@@ -710,7 +787,8 @@ impl<U: UpdatableState> TransactionalState<'_, U> {
     pub fn commit(self) {
         let state = self.state.0;
         let child_cache = self.cache.into_inner();
-        state.apply_writes(&child_cache.writes, &self.class_hash_to_class.into_inner())
+        state
+            .apply_writes(&child_cache.writes.into_public(), &self.class_hash_to_class.into_inner())
     }
 }
 

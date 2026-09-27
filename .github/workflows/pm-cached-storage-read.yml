@@ -32,3 +32,10 @@ jobs:
           grep -Eq 'test result: ok\. [1-9][0-9]* passed; 0 failed; 0 ignored;' "$RUNNER_TEMP/pm-cached-state-tests.log"
       - name: Preserve configured history-window behavior
         run: cargo test --locked -p blockifier --lib --features cairo_native configured_hash_window -- --test-threads=1
+      - name: Native with private fast storage cache
+        run: |
+          set -o pipefail
+          cargo test --locked -p blockifier --lib --features cairo_native,transaction_serde,fast_storage_hash storage_map_hash_ -- --test-threads=1
+          cargo test --locked -p blockifier --lib --features cairo_native,transaction_serde,fast_storage_hash state::cached_state::test:: -- --test-threads=1
+          cargo test --locked -p blockifier --lib --features cairo_native,transaction_serde,fast_storage_hash concurrency:: -- --test-threads=1
+          cargo test --locked -p blockifier --lib --features cairo_native,transaction_serde,fast_storage_hash configured_hash_window -- --test-threads=1

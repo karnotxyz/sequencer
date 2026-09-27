@@ -133,10 +133,7 @@ fn test_versioned_state_proxy() {
     versioned_state_proxys[3].state().apply_writes(
         3,
         &StateMaps {
-            storage: crate::state::cached_state::StorageMap::from_iter([(
-                (contract_address, new_key),
-                felt_v3,
-            )]),
+            storage: HashMap::from([((contract_address, new_key), felt_v3)]),
             declared_contracts: HashMap::from([(another_class_hash, true)]),
             ..Default::default()
         },
@@ -345,7 +342,7 @@ fn test_validate_reads(
     assert!(
         safe_versioned_state
             .pin_version(1)
-            .validate_reads(&transactional_state.cache.borrow().initial_reads)
+            .validate_reads(&transactional_state.cache.borrow().initial_reads.clone().into_public())
             .unwrap()
     );
 }
@@ -353,13 +350,13 @@ fn test_validate_reads(
 #[rstest]
 #[case::storage(
     StateMaps {
-        storage: crate::state::cached_state::StorageMap::from_iter(
+        storage: HashMap::from(
             [((contract_address!("0x1"), storage_key!("0x1")), felt!(1_u8))]
         ),
         ..Default::default()
     },
     StateMaps {
-        storage: crate::state::cached_state::StorageMap::from_iter(
+        storage: HashMap::from(
             [((contract_address!("0x1"), storage_key!("0x1")), felt!(2_u8))]
         ),
         ..Default::default()
@@ -453,7 +450,7 @@ fn test_apply_writes(
     assert_eq!(transactional_states[0].class_hash_to_class.borrow().len(), 1);
 
     safe_versioned_state.pin_version(0).apply_writes(
-        &transactional_states[0].cache.borrow().writes,
+        &transactional_states[0].cache.borrow().writes.clone().into_public(),
         &transactional_states[0].class_hash_to_class.borrow().clone(),
     );
     assert!(transactional_states[1].get_class_hash_at(contract_address).unwrap() == class_hash_0);
@@ -481,7 +478,7 @@ fn test_apply_writes_reexecute_scenario(
     assert!(transactional_states[1].get_class_hash_at(contract_address).unwrap() == class_hash);
 
     safe_versioned_state.pin_version(0).apply_writes(
-        &transactional_states[0].cache.borrow().writes,
+        &transactional_states[0].cache.borrow().writes.clone().into_public(),
         &transactional_states[0].class_hash_to_class.borrow().clone(),
     );
     // Although transaction 0 wrote to the shared state, version 1 needs to be re-executed to see
@@ -528,15 +525,21 @@ fn test_delete_writes(
                 feature_contract.get_runnable_class(),
             )
             .unwrap();
-        safe_versioned_state
-            .pin_version(i)
-            .apply_writes(&tx_state.cache.borrow().writes, &tx_state.class_hash_to_class.borrow());
+        safe_versioned_state.pin_version(i).apply_writes(
+            &tx_state.cache.borrow().writes.clone().into_public(),
+            &tx_state.class_hash_to_class.borrow(),
+        );
     }
 
     safe_versioned_state
         .pin_version(tx_index_to_delete_writes)
         .delete_writes(
-            &transactional_states[tx_index_to_delete_writes].cache.borrow().writes,
+            &transactional_states[tx_index_to_delete_writes]
+                .cache
+                .borrow()
+                .writes
+                .clone()
+                .into_public(),
             &transactional_states[tx_index_to_delete_writes].class_hash_to_class.borrow(),
         )
         .unwrap();
@@ -581,10 +584,7 @@ fn test_delete_writes_completeness(
             contract_address!("0x1"),
             feature_contract.get_class_hash(),
         )]),
-        storage: crate::state::cached_state::StorageMap::from_iter([(
-            (contract_address!("0x1"), storage_key!(1_u8)),
-            felt!("0x1"),
-        )]),
+        storage: HashMap::from([((contract_address!("0x1"), storage_key!(1_u8)), felt!("0x1"))]),
         compiled_class_hashes: HashMap::from([(
             feature_contract.get_class_hash(),
             compiled_class_hash!(0x1_u16),
@@ -660,7 +660,7 @@ fn test_versioned_proxy_state_flow(
     for (i, transactional_state) in transactional_states.iter_mut().enumerate() {
         safe_versioned_state.0.lock().unwrap().apply_writes(
             i,
-            &transactional_state.cache.borrow().writes,
+            &transactional_state.cache.borrow().writes.clone().into_public(),
             &transactional_state.class_hash_to_class.borrow().clone(),
         );
     }

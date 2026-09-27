@@ -143,7 +143,7 @@ fn serialize_state_maps() {
     let class_hashes = HashMap::from([(contract_address!(1_u8), class_hash!(27_u8))]);
     let compiled_class_hashes = HashMap::from([(class_hash!(27_u8), compiled_class_hash!(27_u8))]);
     let declared_contracts = HashMap::from([(class_hash!(27_u8), true)]);
-    let storage = blockifier::state::cached_state::StorageMap::from_iter([
+    let storage = HashMap::from([
         ((contract_address!(1_u8), storage_key!(27_u8)), felt!(1_u8)),
         ((contract_address!(30_u8), storage_key!(27_u8)), felt!(2_u8)),
         ((contract_address!(30_u8), storage_key!(28_u8)), felt!(3_u8)),

@@ -31,7 +31,7 @@ pub fn decompress<S: StateReader>(
         class_hashes
             .insert(alias_decompressor.decompress_address(alias_contract_address), *class_hash);
     }
-    let mut storage = crate::state::cached_state::StorageMap::default();
+    let mut storage = HashMap::new();
     for ((alias_contract_address, alias_storage_key), value) in state_diff.storage.iter() {
         let contract_address = alias_decompressor.decompress_address(alias_contract_address);
         storage.insert(

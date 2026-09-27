@@ -30,7 +30,7 @@ const CONTRACT_ADDRESS: &str = "0x100";
 
 #[test]
 fn storage_map_hash_matches_standard_map_for_full_keys_and_updates() {
-    let mut actual = StorageMap::default();
+    let mut actual = CachedStateMaps::default().storage;
     let mut expected = HashMap::new();
     // Same low limbs, distinct high limbs: full identities must survive the hasher change.
     for high in 0..4_u64 {
@@ -59,7 +59,9 @@ fn storage_map_hash_matches_standard_map_for_full_keys_and_updates() {
     for (slot, value) in &expected {
         assert_eq!(actual.get(slot), Some(value));
     }
-    let copied = storage_map_from_std(expected.clone());
+    let copied =
+        CachedStateMaps::from(StateMaps { storage: expected.clone(), ..Default::default() })
+            .storage;
     assert_eq!(actual, copied);
     for slot in expected.keys().step_by(3) {
         assert_eq!(actual.remove(slot), expected.get(slot).copied());
@@ -123,13 +125,65 @@ fn storage_map_hash_preserves_nested_wire_representation() {
         ((contract_address!("0x200"), storage_key!(1_u8)), Felt::TWO),
     ];
     let maps = StateMaps { storage: slots.into_iter().collect(), ..Default::default() };
-    let wire = serde_json::to_value(&maps).unwrap();
+    let exported = CachedStateMaps::from(maps.clone()).into_public();
+    assert_eq!(exported, maps);
+    let wire = serde_json::to_value(&exported).unwrap();
     let mut nested: HashMap<ContractAddress, HashMap<StorageKey, Felt>> = HashMap::new();
     for ((address, key), value) in slots {
         nested.entry(address).or_default().insert(key, value);
     }
     assert_eq!(wire["storage"], serde_json::to_value(nested).unwrap());
     assert_eq!(serde_json::from_value::<StateMaps>(wire).unwrap(), maps);
+}
+
+#[test]
+fn storage_map_hash_private_public_boundaries_match_standard_state_maps() {
+    let address = contract_address!("0x100");
+    let class_hash = class_hash!(1_u8);
+    let slot = (address, storage_key!(1_u8));
+    let initial = StateMaps {
+        nonces: HashMap::from([(address, nonce!(1_u8))]),
+        class_hashes: HashMap::from([(address, class_hash)]),
+        storage: HashMap::from([(slot, Felt::ZERO)]),
+        compiled_class_hashes: HashMap::from([(class_hash, compiled_class_hash!(1_u8))]),
+        declared_contracts: HashMap::from([(class_hash, false)]),
+    };
+    let updated = StateMaps {
+        nonces: HashMap::from([(address, nonce!(2_u8))]),
+        class_hashes: HashMap::from([(address, class_hash!(2_u8))]),
+        storage: HashMap::from([(slot, Felt::ONE)]),
+        compiled_class_hashes: HashMap::from([(class_hash, compiled_class_hash!(2_u8))]),
+        declared_contracts: HashMap::from([(class_hash, true)]),
+    };
+    let mut cached = CachedStateMaps::from(initial.clone());
+    cached.extend_public(&updated);
+    assert_eq!(cached.clone().into_public(), updated);
+    assert_eq!(cached.get_contract_addresses(), updated.get_contract_addresses());
+    assert_eq!(cached.diff(&CachedStateMaps::from(initial.clone())), updated.diff(&initial));
+    // Squashing uses private-to-private extension rather than the public write-import path.
+    cached.extend(&CachedStateMaps::from(initial.clone()));
+    assert_eq!(cached.into_public(), initial);
+}
+
+#[test]
+#[should_panic(expected = "The source mapping keys are not a subset of the subtract mapping keys")]
+fn storage_map_hash_rejects_diff_without_initial_read() {
+    let mut written = CachedStateMaps::default();
+    written.storage.insert((contract_address!("0x100"), storage_key!(1_u8)), Felt::ONE);
+    written.diff(&CachedStateMaps::default());
+}
+
+#[test]
+fn storage_map_hash_unchanged_values_do_not_create_diff() {
+    let initial = StateMaps {
+        storage: HashMap::from([
+            ((contract_address!("0x100"), storage_key!(1_u8)), Felt::ZERO),
+            ((contract_address!("0x100"), storage_key!(2_u8)), Felt::ONE),
+        ]),
+        ..Default::default()
+    };
+    let cached = CachedStateMaps::from(initial);
+    assert_eq!(cached.diff(&cached), StateMaps::default());
 }
 
 fn set_initial_state_values(
@@ -271,8 +325,15 @@ fn storage_read_fast_path_bulk_keeps_duplicate_misses_and_contract_identity() {
     );
     assert_eq!(state.get_storage_many(&[second, first]).unwrap(), vec![Felt::ZERO, Felt::ONE]);
     assert_eq!(
-        state.cache.borrow().initial_reads.storage,
-        StorageMap::from_iter([(first, Felt::ONE), (second, Felt::ZERO)])
+        state
+            .cache
+            .borrow()
+            .initial_reads
+            .storage
+            .iter()
+            .map(|(&key, &value)| (key, value))
+            .collect::<HashMap<_, _>>(),
+        HashMap::from([(first, Felt::ONE), (second, Felt::ZERO)])
     );
 }
 
@@ -332,7 +393,7 @@ fn cast_between_storage_mapping_types() {
     let storage_val1: Felt = felt!("0x5");
     let storage_val2: Felt = felt!("0xa");
 
-    let storage_map = StorageView(StorageMap::from_iter([
+    let storage_map = StorageView(HashMap::from([
         ((contract_address0, key0), storage_val0),
         ((contract_address0, key1), storage_val1),
         ((contract_address1, key0), storage_val2),
@@ -807,7 +868,7 @@ fn test_cache_get_write_keys() {
             (contract_address1, some_class_hash),
             (contract_address2, some_class_hash),
         ]),
-        storage: StorageMap::from_iter([
+        storage: HashMap::from([
             ((contract_address1, storage_key!(0x300_u16)), some_felt),
             ((contract_address1, storage_key!(0x600_u16)), some_felt),
             ((contract_address3, storage_key!(0x600_u16)), some_felt),
@@ -945,7 +1006,7 @@ fn test_state_maps() {
     let maps = StateMaps {
         nonces: HashMap::from([(contract_address1, nonce1)]),
         class_hashes: HashMap::from([(contract_address1, class_hash1)]),
-        storage: StorageMap::from_iter([((contract_address1, storage_key1), some_felt1)]),
+        storage: HashMap::from([((contract_address1, storage_key1), some_felt1)]),
         compiled_class_hashes: HashMap::from([(class_hash1, compiled_class_hash1)]),
         declared_contracts: HashMap::from([(class_hash1, true)]),
     };

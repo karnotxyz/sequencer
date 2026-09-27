@@ -5,8 +5,8 @@ use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
 
-use dashmap::mapref::one::{Ref, RefMut};
 use dashmap::DashMap;
+use dashmap::mapref::one::{Ref, RefMut};
 
 use crate::blockifier::transaction_executor::{
     TransactionExecutionOutput,
@@ -14,6 +14,7 @@ use crate::blockifier::transaction_executor::{
     TransactionExecutorResult,
 };
 use crate::bouncer::Bouncer;
+use crate::concurrency::TxIndex;
 use crate::concurrency::fee_utils::complete_fee_transfer_flow;
 use crate::concurrency::scheduler::{Scheduler, Task, TransactionStatus};
 use crate::concurrency::versioned_state::{
@@ -21,13 +22,12 @@ use crate::concurrency::versioned_state::{
     VersionedState,
     VersionedStateError,
 };
-use crate::concurrency::TxIndex;
 use crate::context::BlockContext;
 use crate::metrics::{
-    record_transaction_executor_metrics,
-    TransactionExecutorMetrics,
     CALLS_RUNNING_NATIVE,
     TOTAL_CALLS,
+    TransactionExecutorMetrics,
+    record_transaction_executor_metrics,
 };
 use crate::state::cached_state::{ContractClassMapping, StateMaps, TransactionalState};
 use crate::state::state_api::{StateReader, UpdatableState};
@@ -259,7 +259,7 @@ impl<S: StateReader> WorkerExecutor<S> {
                 let contract_classes = transactional_state.class_hash_to_class.take();
                 tx_versioned_state.apply_writes(&state_diff, &contract_classes);
                 ExecutionTaskOutput {
-                    reads: tx_reads_writes.initial_reads,
+                    reads: tx_reads_writes.initial_reads.into_public(),
                     state_diff,
                     contract_classes,
                     run_time,
@@ -267,7 +267,7 @@ impl<S: StateReader> WorkerExecutor<S> {
                 }
             }
             Err(_) => ExecutionTaskOutput {
-                reads: transactional_state.cache.take().initial_reads,
+                reads: transactional_state.cache.take().initial_reads.into_public(),
                 // Failed transaction - ignore the writes.
                 state_diff: StateMaps::default(),
                 contract_classes: HashMap::default(),
@@ -435,8 +435,8 @@ impl<U: UpdatableState> WorkerExecutor<U> {
         record_transaction_executor_metrics(metrics);
         log::debug!(
             "Concurrent execution done. Number of transactions: {n_txs}; Committed chunk size: \
-             {n_committed_txs}; Execute counter: {}; Validate counter: {}; Abort counter: {}; Abort \
-             in commit counter: {}",
+             {n_committed_txs}; Execute counter: {}; Validate counter: {}; Abort counter: {}; \
+             Abort in commit counter: {}",
             metrics.execution_attempts,
             metrics.validation_attempts,
             metrics.aborts,

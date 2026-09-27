@@ -8,22 +8,22 @@ use starknet_api::state::StorageKey;
 use starknet_types_core::felt::Felt;
 
 use super::{
-    ALIAS_COUNTER_STORAGE_KEY,
-    AliasUpdater,
-    INITIAL_AVAILABLE_ALIAS,
-    MAX_NON_COMPRESSED_CONTRACT_ADDRESS,
     allocate_aliases_in_storage,
     compress,
+    AliasUpdater,
+    ALIAS_COUNTER_STORAGE_KEY,
+    INITIAL_AVAILABLE_ALIAS,
+    MAX_NON_COMPRESSED_CONTRACT_ADDRESS,
 };
 use crate::state::cached_state::{CachedState, StateMaps, StorageEntry};
 use crate::state::state_api::{State, StateReader};
 use crate::state::stateful_compression::{AliasCompressor, CompressionError};
 use crate::state::stateful_compression_test_utils::decompress;
-use crate::test_utils::ALIAS_CONTRACT_ADDRESS;
 use crate::test_utils::dict_state_reader::DictStateReader;
+use crate::test_utils::ALIAS_CONTRACT_ADDRESS;
 
-pub(crate) fn insert_to_alias_contract<S: std::hash::BuildHasher>(
-    storage: &mut HashMap<StorageEntry, Felt, S>,
+pub(crate) fn insert_to_alias_contract(
+    storage: &mut HashMap<StorageEntry, Felt>,
     key: StorageKey,
     value: Felt,
 ) {
