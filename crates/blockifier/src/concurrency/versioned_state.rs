@@ -4,8 +4,8 @@ use starknet_api::core::{ClassHash, CompiledClassHash, ContractAddress, Nonce};
 use starknet_api::state::StorageKey;
 use starknet_types_core::felt::Felt;
 
-use crate::concurrency::versioned_storage::VersionedStorage;
 use crate::concurrency::TxIndex;
+use crate::concurrency::versioned_storage::VersionedStorage;
 use crate::execution::contract_class::RunnableCompiledClass;
 use crate::state::cached_state::{ContractClassMapping, StateMaps};
 use crate::state::errors::StateError;
@@ -52,7 +52,9 @@ impl<S: StateReader> VersionedState<S> {
     /// Returns the writes performed up to the given transaction index (excluding).
     fn get_writes_up_to_index(&mut self, tx_index: TxIndex) -> StateMaps {
         StateMaps {
-            storage: self.storage.get_writes_up_to_index(tx_index),
+            storage: crate::state::cached_state::storage_map_from_std(
+                self.storage.get_writes_up_to_index(tx_index),
+            ),
             nonces: self.nonces.get_writes_up_to_index(tx_index),
             class_hashes: self.class_hashes.get_writes_up_to_index(tx_index),
             compiled_class_hashes: self.compiled_class_hashes.get_writes_up_to_index(tx_index),
@@ -63,7 +65,9 @@ impl<S: StateReader> VersionedState<S> {
     #[cfg(any(feature = "testing", test))]
     pub fn get_writes_of_index(&self, tx_index: TxIndex) -> StateMaps {
         StateMaps {
-            storage: self.storage.get_writes_of_index(tx_index),
+            storage: crate::state::cached_state::storage_map_from_std(
+                self.storage.get_writes_of_index(tx_index),
+            ),
             nonces: self.nonces.get_writes_of_index(tx_index),
             class_hashes: self.class_hashes.get_writes_of_index(tx_index),
             compiled_class_hashes: self.compiled_class_hashes.get_writes_of_index(tx_index),

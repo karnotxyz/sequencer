@@ -1,15 +1,15 @@
 use std::collections::HashMap;
-use std::sync::atomic::Ordering;
 use std::sync::Arc;
+use std::sync::atomic::Ordering;
 
 use rstest::rstest;
 use starknet_api::{contract_address, felt, storage_key};
 
 use crate::abi::sierra_types::{SierraType, SierraU128};
-use crate::concurrency::scheduler::{Scheduler, Task, TransactionStatus};
-use crate::concurrency::test_utils::{safe_versioned_state_for_testing, DEFAULT_CHUNK_SIZE};
-use crate::concurrency::versioned_state::ThreadSafeVersionedState;
 use crate::concurrency::TxIndex;
+use crate::concurrency::scheduler::{Scheduler, Task, TransactionStatus};
+use crate::concurrency::test_utils::{DEFAULT_CHUNK_SIZE, safe_versioned_state_for_testing};
+use crate::concurrency::versioned_state::ThreadSafeVersionedState;
 use crate::state::cached_state::{CachedState, ContractClassMapping, StateMaps};
 use crate::state::state_api::UpdatableState;
 use crate::test_utils::dict_state_reader::DictStateReader;
@@ -162,7 +162,7 @@ fn get_reads_writes_for(
 
 fn state_maps_with_single_storage_entry(value: u128) -> StateMaps {
     StateMaps {
-        storage: HashMap::from([(
+        storage: crate::state::cached_state::StorageMap::from_iter([(
             (contract_address!(CONTRACT_ADDRESS), storage_key!(STORAGE_KEY)),
             felt!(value),
         )]),

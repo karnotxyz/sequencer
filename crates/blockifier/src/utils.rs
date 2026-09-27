@@ -35,13 +35,14 @@ where
 /// set of source mapping. (a key that appears in the subtract mapping with a different value, will
 /// not be removed from the source mapping). If the source mapping keys are not a subset of the
 /// subtract mapping keys the function returns an error. Usage: Get updated items from a mapping.
-pub fn strict_subtract_mappings<K, V>(
-    source: &HashMap<K, V>,
-    subtract: &HashMap<K, V>,
-) -> HashMap<K, V>
+pub fn strict_subtract_mappings<K, V, S>(
+    source: &HashMap<K, V, S>,
+    subtract: &HashMap<K, V, S>,
+) -> HashMap<K, V, S>
 where
     K: Clone + Eq + std::hash::Hash,
     V: Clone + PartialEq,
+    S: std::hash::BuildHasher + Default,
 {
     source
         .iter()

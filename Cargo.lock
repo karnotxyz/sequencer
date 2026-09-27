@@ -3745,6 +3745,7 @@ dependencies = [
 name = "blockifier"
 version = "0.18.0-rc.1"
 dependencies = [
+ "ahash",
  "anyhow",
  "apollo_compilation_utils",
  "apollo_compile_to_native",

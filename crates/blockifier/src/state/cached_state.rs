@@ -332,8 +332,26 @@ impl<S: StateReader> CachedState<S> {
 
 pub type StorageEntry = (ContractAddress, StorageKey);
 
+/// Full-key storage table. The opt-in hasher changes lookup cost, not storage identity or hashing
+/// used by commitments. Random per-table seeds are retained; iteration order is unspecified.
+#[cfg(feature = "fast_storage_hash")]
+pub type StorageMap = HashMap<StorageEntry, Felt, ahash::RandomState>;
+#[cfg(not(feature = "fast_storage_hash"))]
+pub type StorageMap = HashMap<StorageEntry, Felt>;
+
+pub(crate) fn storage_map_from_std(map: HashMap<StorageEntry, Felt>) -> StorageMap {
+    #[cfg(feature = "fast_storage_hash")]
+    {
+        map.into_iter().collect()
+    }
+    #[cfg(not(feature = "fast_storage_hash"))]
+    {
+        map
+    }
+}
+
 #[derive(Debug, Default, derive_more::IntoIterator)]
-pub struct StorageView(pub HashMap<StorageEntry, Felt>);
+pub struct StorageView(pub StorageMap);
 
 /// Converts a `CachedState`'s storage mapping into a `StateDiff`'s storage mapping.
 impl From<StorageView> for IndexMap<ContractAddress, IndexMap<StorageKey, Felt>> {
@@ -359,7 +377,7 @@ pub struct StateMaps {
     pub class_hashes: HashMap<ContractAddress, ClassHash>,
     // TODO(Yoni): consider changing type to HashMap<ContractAddress, HashMap<StorageKey, Felt>>.
     #[cfg_attr(feature = "transaction_serde", serde(with = "storage_map_serializer"))]
-    pub storage: HashMap<StorageEntry, Felt>,
+    pub storage: StorageMap,
     pub compiled_class_hashes: HashMap<ClassHash, CompiledClassHash>,
     pub declared_contracts: HashMap<ClassHash, bool>,
 }
@@ -375,11 +393,11 @@ mod storage_map_serializer {
     use starknet_api::state::StorageKey;
     use starknet_types_core::felt::Felt;
 
-    use super::StorageEntry;
+    use super::StorageMap as FlatStorageMap;
 
     type StorageMap = HashMap<ContractAddress, HashMap<StorageKey, Felt>>;
 
-    pub fn serialize<S>(map: &HashMap<StorageEntry, Felt>, serializer: S) -> Result<S::Ok, S::Error>
+    pub fn serialize<S>(map: &FlatStorageMap, serializer: S) -> Result<S::Ok, S::Error>
     where
         S: Serializer,
     {
@@ -390,7 +408,7 @@ mod storage_map_serializer {
         serde::Serialize::serialize(&nested_map, serializer)
     }
 
-    pub fn deserialize<'de, D>(deserializer: D) -> Result<HashMap<StorageEntry, Felt>, D::Error>
+    pub fn deserialize<'de, D>(deserializer: D) -> Result<FlatStorageMap, D::Error>
     where
         D: Deserializer<'de>,
     {
@@ -840,9 +858,9 @@ impl AllocatedKeys {
     }
 
     /// Collects entries that turn zero -> nonzero.
-    pub fn from_storage_diff(
-        updated_storage: &HashMap<StorageEntry, Felt>,
-        base_storage: &HashMap<StorageEntry, Felt>,
+    pub fn from_storage_diff<S1: std::hash::BuildHasher, S2: std::hash::BuildHasher>(
+        updated_storage: &HashMap<StorageEntry, Felt, S1>,
+        base_storage: &HashMap<StorageEntry, Felt, S2>,
     ) -> Self {
         Self(
             updated_storage

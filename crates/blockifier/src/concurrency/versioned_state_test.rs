@@ -9,8 +9,8 @@ use rstest::{fixture, rstest};
 use starknet_api::abi::abi_utils::{get_fee_token_var_address, get_storage_var_address};
 use starknet_api::contract_class::compiled_class_hash::HashVersion;
 use starknet_api::core::{ClassHash, ContractAddress};
-use starknet_api::test_utils::deploy_account::executable_deploy_account_tx;
 use starknet_api::test_utils::DEFAULT_STRK_L1_GAS_PRICE;
+use starknet_api::test_utils::deploy_account::executable_deploy_account_tx;
 use starknet_api::transaction::fields::ValidResourceBounds;
 use starknet_api::{
     calldata,
@@ -23,6 +23,7 @@ use starknet_api::{
     storage_key,
 };
 
+use crate::concurrency::TxIndex;
 use crate::concurrency::test_utils::{
     class_hash,
     contract_address,
@@ -33,7 +34,6 @@ use crate::concurrency::versioned_state::{
     ThreadSafeVersionedState,
     VersionedStateProxy,
 };
-use crate::concurrency::TxIndex;
 use crate::context::BlockContext;
 use crate::state::cached_state::{
     CachedState,
@@ -43,10 +43,10 @@ use crate::state::cached_state::{
 };
 use crate::state::errors::StateError;
 use crate::state::state_api::{State, StateReader, UpdatableState};
+use crate::test_utils::BALANCE;
 use crate::test_utils::contracts::{FeatureContractData, FeatureContractTrait};
 use crate::test_utils::dict_state_reader::DictStateReader;
 use crate::test_utils::initial_test_state::test_state;
-use crate::test_utils::BALANCE;
 use crate::transaction::account_transaction::AccountTransaction;
 use crate::transaction::objects::{HasRelatedFeeType, TransactionInfoCreator};
 use crate::transaction::test_utils::{default_all_resource_bounds, l1_resource_bounds};
@@ -133,7 +133,10 @@ fn test_versioned_state_proxy() {
     versioned_state_proxys[3].state().apply_writes(
         3,
         &StateMaps {
-            storage: HashMap::from([((contract_address, new_key), felt_v3)]),
+            storage: crate::state::cached_state::StorageMap::from_iter([(
+                (contract_address, new_key),
+                felt_v3,
+            )]),
             declared_contracts: HashMap::from([(another_class_hash, true)]),
             ..Default::default()
         },
@@ -350,13 +353,13 @@ fn test_validate_reads(
 #[rstest]
 #[case::storage(
     StateMaps {
-        storage: HashMap::from(
+        storage: crate::state::cached_state::StorageMap::from_iter(
             [((contract_address!("0x1"), storage_key!("0x1")), felt!(1_u8))]
         ),
         ..Default::default()
     },
     StateMaps {
-        storage: HashMap::from(
+        storage: crate::state::cached_state::StorageMap::from_iter(
             [((contract_address!("0x1"), storage_key!("0x1")), felt!(2_u8))]
         ),
         ..Default::default()
@@ -578,7 +581,10 @@ fn test_delete_writes_completeness(
             contract_address!("0x1"),
             feature_contract.get_class_hash(),
         )]),
-        storage: HashMap::from([((contract_address!("0x1"), storage_key!(1_u8)), felt!("0x1"))]),
+        storage: crate::state::cached_state::StorageMap::from_iter([(
+            (contract_address!("0x1"), storage_key!(1_u8)),
+            felt!("0x1"),
+        )]),
         compiled_class_hashes: HashMap::from([(
             feature_contract.get_class_hash(),
             compiled_class_hash!(0x1_u16),

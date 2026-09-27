@@ -28,6 +28,110 @@ use crate::test_utils::initial_test_state::test_state;
 use crate::transaction::test_utils::{STORAGE_WRITE, default_all_resource_bounds, run_invoke_tx};
 const CONTRACT_ADDRESS: &str = "0x100";
 
+#[test]
+fn storage_map_hash_matches_standard_map_for_full_keys_and_updates() {
+    let mut actual = StorageMap::default();
+    let mut expected = HashMap::new();
+    // Same low limbs, distinct high limbs: full identities must survive the hasher change.
+    for high in 0..4_u64 {
+        let address = ContractAddress::try_from(
+            Felt::from(high) * Felt::from_hex("0x100000000000000000000000000000000").unwrap()
+                + Felt::from(17_u64),
+        )
+        .unwrap();
+        for index in 0..900_u64 {
+            let key = StorageKey::try_from(
+                Felt::from(high)
+                    * Felt::from_hex("0x100000000000000000000000000000000000000000000000000")
+                        .unwrap()
+                    + Felt::from(index),
+            )
+            .unwrap();
+            let slot = (address, key);
+            let value = Felt::from(index % 7);
+            assert_eq!(actual.insert(slot, value), expected.insert(slot, value));
+            if index % 3 == 0 {
+                assert_eq!(actual.insert(slot, Felt::ZERO), expected.insert(slot, Felt::ZERO));
+            }
+        }
+    }
+    assert_eq!(actual.len(), expected.len());
+    for (slot, value) in &expected {
+        assert_eq!(actual.get(slot), Some(value));
+    }
+    let copied = storage_map_from_std(expected.clone());
+    assert_eq!(actual, copied);
+    for slot in expected.keys().step_by(3) {
+        assert_eq!(actual.remove(slot), expected.get(slot).copied());
+        assert_eq!(actual.get(slot), None);
+    }
+}
+
+#[test]
+fn storage_map_hash_preserves_bulk_reads_pending_zero_and_state_diff() {
+    let addresses = [contract_address!("0x100"), contract_address!("0x200")];
+    let slots: Vec<_> = addresses
+        .into_iter()
+        .flat_map(|address| {
+            (0..900_u64).map(move |index| {
+                ((address, StorageKey::try_from(Felt::from(index)).unwrap()), Felt::from(index % 5))
+            })
+        })
+        .collect();
+    let baseline: HashMap<_, _> = slots.iter().copied().collect();
+    let mut state =
+        CachedState::from(DictStateReader { storage_view: baseline.clone(), ..Default::default() });
+    let keys: Vec<_> = slots.iter().map(|(slot, _)| *slot).collect();
+    assert_eq!(
+        state.get_storage_many(&keys).unwrap(),
+        slots.iter().map(|(_, value)| *value).collect::<Vec<_>>()
+    );
+    let mut writes = HashMap::new();
+    for (index, &slot) in keys.iter().enumerate().step_by(7) {
+        let value = if index % 2 == 0 { Felt::ZERO } else { Felt::from(99_u64) };
+        state.set_storage_at(slot.0, slot.1, value).unwrap();
+        writes.insert(slot, value);
+    }
+    let repeated: Vec<_> = keys.iter().rev().chain(keys.iter()).copied().collect();
+    let expected: Vec<_> = repeated
+        .iter()
+        .map(|slot| writes.get(slot).or_else(|| baseline.get(slot)).copied().unwrap())
+        .collect();
+    assert_eq!(state.get_storage_many(&repeated).unwrap(), expected);
+    for (&slot, value) in &baseline {
+        assert_eq!(state.cache.borrow().initial_reads.storage.get(&slot), Some(value));
+    }
+    let changes = state.to_state_diff().unwrap();
+    let expected_diff: HashMap<_, _> = writes
+        .iter()
+        .filter(|(key, value)| baseline.get(key) != Some(value))
+        .map(|(&key, &value)| (key, value))
+        .collect();
+    assert_eq!(changes.state_maps.storage.len(), expected_diff.len());
+    for (slot, value) in &expected_diff {
+        assert_eq!(changes.state_maps.storage.get(slot), Some(value));
+    }
+    assert_eq!(changes.allocated_keys, AllocatedKeys::from_storage_diff(&writes, &baseline));
+}
+
+#[cfg(feature = "transaction_serde")]
+#[test]
+fn storage_map_hash_preserves_nested_wire_representation() {
+    let slots = [
+        ((contract_address!("0x100"), storage_key!(1_u8)), Felt::ZERO),
+        ((contract_address!("0x100"), storage_key!(2_u8)), Felt::ONE),
+        ((contract_address!("0x200"), storage_key!(1_u8)), Felt::TWO),
+    ];
+    let maps = StateMaps { storage: slots.into_iter().collect(), ..Default::default() };
+    let wire = serde_json::to_value(&maps).unwrap();
+    let mut nested: HashMap<ContractAddress, HashMap<StorageKey, Felt>> = HashMap::new();
+    for ((address, key), value) in slots {
+        nested.entry(address).or_default().insert(key, value);
+    }
+    assert_eq!(wire["storage"], serde_json::to_value(nested).unwrap());
+    assert_eq!(serde_json::from_value::<StateMaps>(wire).unwrap(), maps);
+}
+
 fn set_initial_state_values(
     state: &mut CachedState<DictStateReader>,
     class_hash_to_class: ContractClassMapping,
@@ -168,7 +272,7 @@ fn storage_read_fast_path_bulk_keeps_duplicate_misses_and_contract_identity() {
     assert_eq!(state.get_storage_many(&[second, first]).unwrap(), vec![Felt::ZERO, Felt::ONE]);
     assert_eq!(
         state.cache.borrow().initial_reads.storage,
-        HashMap::from([(first, Felt::ONE), (second, Felt::ZERO)])
+        StorageMap::from_iter([(first, Felt::ONE), (second, Felt::ZERO)])
     );
 }
 
@@ -228,7 +332,7 @@ fn cast_between_storage_mapping_types() {
     let storage_val1: Felt = felt!("0x5");
     let storage_val2: Felt = felt!("0xa");
 
-    let storage_map = StorageView(HashMap::from([
+    let storage_map = StorageView(StorageMap::from_iter([
         ((contract_address0, key0), storage_val0),
         ((contract_address0, key1), storage_val1),
         ((contract_address1, key0), storage_val2),
@@ -703,7 +807,7 @@ fn test_cache_get_write_keys() {
             (contract_address1, some_class_hash),
             (contract_address2, some_class_hash),
         ]),
-        storage: HashMap::from([
+        storage: StorageMap::from_iter([
             ((contract_address1, storage_key!(0x300_u16)), some_felt),
             ((contract_address1, storage_key!(0x600_u16)), some_felt),
             ((contract_address3, storage_key!(0x600_u16)), some_felt),
@@ -841,7 +945,7 @@ fn test_state_maps() {
     let maps = StateMaps {
         nonces: HashMap::from([(contract_address1, nonce1)]),
         class_hashes: HashMap::from([(contract_address1, class_hash1)]),
-        storage: HashMap::from([((contract_address1, storage_key1), some_felt1)]),
+        storage: StorageMap::from_iter([((contract_address1, storage_key1), some_felt1)]),
         compiled_class_hashes: HashMap::from([(class_hash1, compiled_class_hash1)]),
         declared_contracts: HashMap::from([(class_hash1, true)]),
     };

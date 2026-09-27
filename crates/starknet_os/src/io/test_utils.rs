@@ -8,9 +8,9 @@ use starknet_types_core::hash::{Poseidon, StarkHash};
 
 use crate::hints::hint_implementation::kzg::test_utils::horner_eval;
 use crate::hints::hint_implementation::kzg::utils::{
-    polynomial_coefficients_to_kzg_commitment,
     BLS_PRIME,
     FIELD_ELEMENTS_PER_BLOB,
+    polynomial_coefficients_to_kzg_commitment,
 };
 use crate::io::os_output::OsKzgCommitmentInfo;
 use crate::io::os_output_types::{
@@ -127,7 +127,7 @@ fn to_state_maps<CO: ContractChangesGetter, CL: UpdateGetter<ClassHash, Compiled
         .iter()
         .filter_map(|contract| contract.new_nonce().map(|nonce| (contract.addr(), nonce)))
         .collect();
-    let mut storage = std::collections::HashMap::new();
+    let mut storage = blockifier::state::cached_state::StorageMap::default();
     for contract in contracts {
         for change in contract.storage_changes() {
             storage.insert((contract.addr(), change.key()), change.new_value());
