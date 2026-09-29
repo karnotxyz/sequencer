@@ -19,6 +19,7 @@ from starkware.starknet.core.os.builtins import (
 )
 from starkware.starknet.core.os.execution.oracle import (
     execute_oracle_call,
+    ORACLE_CONTRACT_ADDRESS,
     ORACLE_GET_PRICE_SELECTOR,
 )
 
@@ -38,7 +39,7 @@ func main{output_ptr: felt*, range_check_ptr, poseidon_ptr: PoseidonBuiltin*}() 
         ids.publisher = int(program_input['publisher'])
         ids.asset = int(program_input['asset'])
         ids.response_price = int(program_input['response_price'])
-        ids.address = int(program_input.get('address', 5))
+        ids.address = int(program_input.get('address', ids.ORACLE_CONTRACT_ADDRESS))
         ids.selector = int(program_input.get('selector', ids.ORACLE_GET_PRICE_SELECTOR))
         ids.gas = int(program_input.get('gas', 2000000))
     %}

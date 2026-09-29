@@ -1,4 +1,4 @@
-//! Experimental address-0x5 oracle. Witnesses are private execution input, never tx calldata.
+//! Experimental namespaced oracle. Witnesses are private execution input, never tx calldata.
 //! The caller must read its authenticated root using ordinary storage before calling get_price.
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -10,7 +10,11 @@ use starknet_types_core::hash::{Poseidon, StarkHash};
 
 use super::vm_syscall_utils::SyscallExecutorBaseError;
 
-pub const ORACLE_ADDRESS: Felt = Felt::from_hex_unchecked("0x5");
+/// starknet_keccak(b"paradox_oracle_tick"): Keccak-256 truncated to 250 bits.
+/// This is a protocol reservation, not an ordinary deployed contract.
+pub const ORACLE_ADDRESS: Felt = Felt::from_hex_unchecked(
+    "0x35b8b5f74b0dd94b43ac73391c85e8599f2af36c5c095bb734240c84b0c9995",
+);
 pub const ORACLE_TREE_HEIGHT: usize = 19;
 pub const ORACLE_READ_GAS: u64 = 1_000_000;
 const LEAF_DOMAIN: Felt = Felt::from_hex_unchecked("0x4f5241434c455f5631");
@@ -189,6 +193,12 @@ pub fn read_price(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn oracle_address_matches_namespace() {
+        assert_eq!(ORACLE_ADDRESS, selector_from_name("paradox_oracle_tick").0);
+        assert_ne!(ORACLE_ADDRESS, Felt::from(5_u32));
+    }
 
     fn fixture() -> OracleWitness {
         OracleWitness {

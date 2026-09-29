@@ -80,7 +80,8 @@ mod TestContract {
     fn test_oracle_read(self: @ContractState, asset: felt252, expected_price: felt252) {
         let root = syscalls::storage_read_syscall(0, 45.try_into().unwrap()).unwrap_syscall();
         let price = syscalls::call_contract_syscall(
-            5.try_into().unwrap(), selector!("get_price"), array![root, asset].span(),
+            selector!("paradox_oracle_tick").try_into().unwrap(),
+            selector!("get_price"), array![root, asset].span(),
         ).unwrap_syscall();
         assert(price.len() == 1, 'oracle response length');
         assert(*price.at(0) == expected_price, 'oracle price mismatch');

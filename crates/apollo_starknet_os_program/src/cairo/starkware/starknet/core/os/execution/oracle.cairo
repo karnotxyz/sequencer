@@ -3,7 +3,8 @@ from starkware.cairo.common.builtin_poseidon.poseidon import poseidon_hash, pose
 from starkware.cairo.common.cairo_builtins import PoseidonBuiltin
 from starkware.cairo.common.math import assert_nn, unsigned_div_rem
 
-const ORACLE_CONTRACT_ADDRESS = 5;
+// starknet_keccak("paradox_oracle_tick"), matching the VM/Native protocol reservation.
+const ORACLE_CONTRACT_ADDRESS = 0x35b8b5f74b0dd94b43ac73391c85e8599f2af36c5c095bb734240c84b0c9995;
 const ORACLE_TREE_HEIGHT = 19;
 const ORACLE_LEAF_DOMAIN = 'ORACLE_V1';
 // Experimental gas charge; must be profiled before production activation.
