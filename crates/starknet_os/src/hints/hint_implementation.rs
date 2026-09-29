@@ -13,6 +13,7 @@ pub(crate) mod execution;
 pub(crate) mod find_element;
 pub mod kzg;
 pub(crate) mod math;
+pub(crate) mod oracle;
 pub(crate) mod os;
 pub(crate) mod os_logger;
 pub(crate) mod output;

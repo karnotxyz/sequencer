@@ -1,11 +1,11 @@
 use std::collections::{BTreeMap, HashMap};
 
 use cairo_vm::serde::deserialize_program::{
-    deserialize_array_of_bigint_hex,
     Attribute,
     HintParams,
     Identifier,
     ReferenceManager,
+    deserialize_array_of_bigint_hex,
 };
 use cairo_vm::types::builtin_name::BuiltinName;
 use cairo_vm::types::errors::program_errors::ProgramError;
@@ -24,13 +24,13 @@ use starknet_types_core::felt::Felt;
 use crate::execution::call_info::{CallExecution, CallInfo, Retdata};
 use crate::execution::contract_class::{RunnableCompiledClass, TrackedResource};
 use crate::execution::entry_point::{
-    execute_constructor_entry_point,
     ConstructorContext,
     ConstructorEntryPointExecutionResult,
     EntryPointExecutionContext,
     EntryPointExecutionResult,
     EntryPointRevertInfo,
     ExecutableCallEntryPoint,
+    execute_constructor_entry_point,
 };
 use crate::execution::errors::{
     ConstructorEntryPointExecutionError,
@@ -40,7 +40,7 @@ use crate::execution::errors::{
 };
 #[cfg(feature = "cairo_native")]
 use crate::execution::native::entry_point_execution as native_entry_point_execution;
-use crate::execution::stack_trace::{extract_trailing_cairo1_revert_trace, Cairo1RevertHeader};
+use crate::execution::stack_trace::{Cairo1RevertHeader, extract_trailing_cairo1_revert_trace};
 use crate::execution::syscalls::hint_processor::{
     ENTRYPOINT_NOT_FOUND_ERROR_FELT,
     OUT_OF_GAS_ERROR_FELT,
@@ -314,7 +314,9 @@ pub fn execute_deployment(
         state.get_class_hash_at(deployed_contract_address).map_err(|error| {
             ConstructorEntryPointExecutionError::new(error.into(), &ctor_context, None)
         })?;
-    if current_class_hash != ClassHash::default() {
+    if current_class_hash != ClassHash::default()
+        || *deployed_contract_address.0.key() == crate::execution::syscalls::oracle::ORACLE_ADDRESS
+    {
         return Err(ConstructorEntryPointExecutionError::new(
             StateError::UnavailableContractAddress(deployed_contract_address).into(),
             &ctor_context,

@@ -48,8 +48,8 @@ use cairo_vm::vm::errors::vm_errors::VirtualMachineError;
 use cairo_vm::vm::vm_core::VirtualMachine;
 use starknet_api::abi::abi_utils::selector_from_name;
 use starknet_api::execution_resources::GasAmount;
-use starknet_api::transaction::constants::EXECUTE_ENTRY_POINT_NAME;
 use starknet_api::transaction::TransactionVersion;
+use starknet_api::transaction::constants::EXECUTE_ENTRY_POINT_NAME;
 use starknet_api::versioned_constants_logic::VersionedConstantsTrait;
 use starknet_types_core::felt::Felt;
 
@@ -57,12 +57,12 @@ use crate::hint_processor::execution_helper::ExecutionHelperError;
 use crate::hint_processor::snos_hint_processor::SnosHintProcessor;
 use crate::hints::vars::CairoStruct;
 use crate::vm_utils::{
+    IdentifierGetter,
+    VmUtilsError,
     get_address_of_nested_fields_from_base_address,
     get_field_offset,
     get_size_of_cairo_struct,
     write_to_temp_segment,
-    IdentifierGetter,
-    VmUtilsError,
 };
 
 #[derive(Debug, thiserror::Error)]
@@ -179,6 +179,49 @@ impl<S: StateReader> SyscallExecutor for SnosHintProcessor<'_, S> {
     ) -> Result<CallContractResponse, Self::Error> {
         if request.function_selector == selector_from_name(EXECUTE_ENTRY_POINT_NAME) {
             return Err(handle_failure(INVALID_ARGUMENT_FELT));
+        }
+        if *request.contract_address.0.key()
+            == blockifier::execution::syscalls::oracle::ORACLE_ADDRESS
+        {
+            let invalid = |info: &str| SyscallExecutorBaseError::InvalidSyscallInput {
+                input: request.function_selector.0,
+                info: info.into(),
+            };
+            if request.function_selector != selector_from_name("get_price")
+                || request.calldata.0.len() != 2
+            {
+                return Err(invalid("oracle expects get_price(root, asset_id)").into());
+            }
+            let publisher = *syscall_handler
+                .get_mut_current_execution_helper()?
+                .tx_execution_iter
+                .get_mut_tx_execution_info_ref()?
+                .get_mut_call_info_tracker()?
+                .call_info
+                .call
+                .storage_address
+                .0
+                .key();
+            let witness = syscall_handler
+                .os_hints_config
+                .oracle_witnesses
+                .iter()
+                .find(|w| {
+                    w.root == request.calldata.0[0]
+                        && w.publisher == publisher
+                        && Felt::from(w.asset) == request.calldata.0[1]
+                })
+                .ok_or_else(|| invalid("oracle witness unavailable"))?;
+            *remaining_gas = remaining_gas
+                .checked_sub(blockifier::execution::syscalls::oracle::ORACLE_READ_GAS)
+                .ok_or_else(|| invalid("insufficient oracle gas"))?;
+            // No synthetic ordinary inner call: the proved OS has a matching dedicated branch.
+            // The oracle branch constrains this response in place; ordinary calls instead
+            // relocate their temporary response to the inner Cairo execution's return segment.
+            let start_ptr = vm.add_memory_segment();
+            vm.load_data(start_ptr, &[MaybeRelocatable::from(Felt::from(witness.price))])?;
+            let segment = ReadOnlySegment { start_ptr, length: 1 };
+            return Ok(CallContractResponse { segment });
         }
         call_contract_helper(vm, syscall_handler, remaining_gas)
     }

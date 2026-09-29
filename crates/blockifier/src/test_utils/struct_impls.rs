@@ -198,6 +198,7 @@ impl BlockContext {
             chain_info: ChainInfo::create_for_testing(),
             versioned_constants: VersionedConstants::create_for_testing(),
             bouncer_config: BouncerConfig::max(),
+            oracle_witnesses: Default::default(),
         }
     }
 
@@ -207,6 +208,7 @@ impl BlockContext {
             chain_info: ChainInfo::create_for_testing(),
             versioned_constants: VersionedConstants::create_for_account_testing(),
             bouncer_config: BouncerConfig::max(),
+            oracle_witnesses: Default::default(),
         }
     }
 

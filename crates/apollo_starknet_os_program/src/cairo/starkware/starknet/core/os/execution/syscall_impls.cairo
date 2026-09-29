@@ -146,6 +146,8 @@ from starkware.starknet.core.os.transaction_hash.transaction_hash import (
     update_pedersen_in_builtin_ptrs,
 )
 
+from starkware.starknet.core.os.execution.oracle import ORACLE_CONTRACT_ADDRESS, execute_oracle_call
+
 // Returns a failure response with a single felt.
 @known_ap_change
 func write_failure_response{syscall_ptr: felt*}(remaining_gas: felt, failure_felt: felt) {
@@ -189,6 +191,14 @@ func execute_call_contract{
         return ();
     }
 
+    if (request.contract_address == ORACLE_CONTRACT_ADDRESS) {
+        execute_oracle_call(
+            request=request,
+            publisher=caller_execution_context.execution_info.contract_address,
+            remaining_gas=remaining_gas,
+        );
+        return ();
+    }
     tempvar contract_address = request.contract_address;
     let (state_entry: StateEntry*) = dict_read{dict_ptr=contract_state_changes}(
         key=contract_address

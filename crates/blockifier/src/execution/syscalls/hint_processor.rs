@@ -14,16 +14,16 @@ use cairo_vm::vm::errors::memory_errors::MemoryError;
 use cairo_vm::vm::errors::vm_errors::VirtualMachineError;
 use cairo_vm::vm::runners::cairo_runner::{ResourceTracker, RunResources};
 use cairo_vm::vm::vm_core::VirtualMachine;
+use starknet_api::StarknetApiError;
 use starknet_api::block::BlockHash;
 use starknet_api::contract_class::EntryPointType;
 use starknet_api::core::{ClassHash, ContractAddress, EntryPointSelector};
 use starknet_api::execution_resources::GasAmount;
 use starknet_api::transaction::fields::{
-    valid_resource_bounds_as_felts,
     Calldata,
     ResourceAsFelts,
+    valid_resource_bounds_as_felts,
 };
-use starknet_api::StarknetApiError;
 use starknet_types_core::felt::{Felt, FromStrError};
 use thiserror::Error;
 
@@ -38,17 +38,16 @@ use crate::execution::entry_point::{
 };
 use crate::execution::errors::{ConstructorEntryPointExecutionError, EntryPointExecutionError};
 use crate::execution::execution_utils::{
+    ReadOnlySegment,
+    ReadOnlySegments,
     felt_from_ptr,
     felt_range_from_ptr,
     write_maybe_relocatable,
-    ReadOnlySegment,
-    ReadOnlySegments,
 };
 use crate::execution::syscalls::secp::SecpHintProcessor;
 use crate::execution::syscalls::syscall_base::{SyscallHandlerBase, SyscallResult};
 use crate::execution::syscalls::syscall_executor::SyscallExecutor;
 use crate::execution::syscalls::vm_syscall_utils::{
-    execute_next_syscall,
     CallContractRequest,
     CallContractResponse,
     DeployRequest,
@@ -79,6 +78,7 @@ use crate::execution::syscalls::vm_syscall_utils::{
     SyscallExecutorBaseError,
     SyscallSelector,
     TryExtractRevert,
+    execute_next_syscall,
 };
 use crate::state::errors::StateError;
 use crate::state::state_api::State;
@@ -520,7 +520,7 @@ impl SyscallExecutor for SyscallHintProcessor<'_> {
         remaining_gas: &mut u64,
     ) -> Result<CallContractResponse, Self::Error> {
         let storage_address = request.contract_address;
-        let class_hash = syscall_handler.base.state.get_class_hash_at(storage_address)?;
+
         let selector = request.function_selector;
         if syscall_handler.is_validate_mode()
             && syscall_handler.storage_address() != storage_address
@@ -533,6 +533,19 @@ impl SyscallExecutor for SyscallHintProcessor<'_> {
         }
         syscall_handler.base.maybe_block_direct_execute_call(selector)?;
 
+        if *storage_address.0.key() == super::oracle::ORACLE_ADDRESS {
+            let price = super::oracle::read_price(
+                &syscall_handler.base.context.tx_context.block_context.oracle_witnesses,
+                *syscall_handler.storage_address().0.key(),
+                selector.0,
+                &request.calldata.0,
+                remaining_gas,
+            )?;
+            let segment = create_retdata_segment(vm, syscall_handler, &[price])?;
+            return Ok(CallContractResponse { segment });
+        }
+
+        let class_hash = syscall_handler.base.state.get_class_hash_at(storage_address)?;
         let entry_point = CallEntryPoint {
             class_hash: None,
             code_address: Some(storage_address),

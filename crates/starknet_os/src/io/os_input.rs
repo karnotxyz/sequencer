@@ -74,6 +74,9 @@ pub struct OsHintsConfig {
     pub chain_info: OsChainInfo,
     pub public_keys: Option<Vec<Felt>>,
     pub rng_seed_salt: Option<Felt>,
+    /// Untrusted private witnesses. Cairo, not this input, establishes membership.
+    #[cfg_attr(feature = "deserialize", serde(default))]
+    pub oracle_witnesses: Vec<blockifier::execution::syscalls::oracle::OracleWitness>,
 }
 impl OsHintsConfig {
     pub fn log_level(&self) -> LevelFilter {

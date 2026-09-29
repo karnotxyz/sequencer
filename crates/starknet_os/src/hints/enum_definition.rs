@@ -115,6 +115,7 @@ use crate::hints::hint_implementation::kzg::implementation::{
     write_split_result,
 };
 use crate::hints::hint_implementation::math::log2_ceil;
+use crate::hints::hint_implementation::oracle::load_oracle_witness;
 use crate::hints::hint_implementation::os::{
     check_block_hash_consistency,
     configure_kzg_manager,
@@ -225,7 +226,7 @@ use crate::hints::hint_implementation::syscalls::{
     storage_read,
     storage_write,
 };
-use crate::hints::pythonic_hint_strings::builtin_selection::{SELECTED_BUILTINS, SELECT_BUILTIN};
+use crate::hints::pythonic_hint_strings::builtin_selection::{SELECT_BUILTIN, SELECTED_BUILTINS};
 use crate::hints::pythonic_hint_strings::deprecated_syscalls::{
     CALL_CONTRACT,
     DELEGATE_CALL,
@@ -468,6 +469,7 @@ define_hint_enum!(
     SnosHintProcessor<'_, S>,
     S,
     StateReader,
+    (LoadOracleWitness, load_oracle_witness),
     (LoadClass, load_class),
     (RelocateSha256Segment, relocate_sha256_segment),
     (EnterScopeWithBytecodeSegmentStructure, enter_scope_with_bytecode_segment_structure),
