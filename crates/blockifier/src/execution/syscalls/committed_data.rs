@@ -26,16 +26,19 @@ pub const MAX_COMMITTED_DATA_WITNESSES: usize = 65_536;
 pub const COMMITTED_DATA_READ_GAS: u64 = 1_000_000;
 /// Conservative OS resource envelope per attempted special read. Kept separate from contract
 /// execution so step-tracked callers and block builtin limits cannot hide the membership work.
-pub fn read_os_resources() -> cairo_vm::vm::runners::cairo_runner::ExecutionResources {
+pub fn read_os_resources() -> &'static cairo_vm::vm::runners::cairo_runner::ExecutionResources {
     use cairo_vm::types::builtin_name::BuiltinName;
-    cairo_vm::vm::runners::cairo_runner::ExecutionResources {
-        n_steps: 4096,
-        n_memory_holes: 32,
-        builtin_instance_counter: std::collections::BTreeMap::from([
-            (BuiltinName::range_check, 128),
-            (BuiltinName::poseidon, 32),
-        ]),
-    }
+    use cairo_vm::vm::runners::cairo_runner::ExecutionResources;
+    static RESOURCES: std::sync::LazyLock<ExecutionResources> =
+        std::sync::LazyLock::new(|| ExecutionResources {
+            n_steps: 4096,
+            n_memory_holes: 32,
+            builtin_instance_counter: std::collections::BTreeMap::from([
+                (BuiltinName::range_check, 128),
+                (BuiltinName::poseidon, 32),
+            ]),
+        });
+    &RESOURCES
 }
 
 /// Domain separation for version-one leaves, also encoded in Cairo OS.
@@ -55,6 +58,8 @@ pub enum CommittedDataError {
     DuplicateWitness,
     #[error("At most {MAX_COMMITTED_DATA_WITNESSES} witnesses are accepted per replay")]
     TooManyWitnesses,
+    #[error("Committed-data witness unavailable for exact root, publisher and index")]
+    Unavailable,
     #[error("Committed-data provider failed: {0}")]
     Provider(String),
 }
@@ -74,7 +79,9 @@ pub struct CommittedDataWitness {
 impl CommittedDataWitness {
     /// Checks publisher, index, value and ordered path against the requested root.
     pub fn verify(&self) -> bool {
-        if self.index as usize >= MAX_COMMITTED_DATA_VALUES {
+        if usize::try_from(self.index).expect("u32 fits supported usize")
+            >= MAX_COMMITTED_DATA_VALUES
+        {
             return false;
         }
         let mut node = leaf(self.publisher, self.index, self.value);
@@ -126,7 +133,13 @@ impl CommittedDataSet {
         let leaves = values
             .iter()
             .enumerate()
-            .map(|(index, value)| leaf(publisher, index as u32, *value))
+            .map(|(index, value)| {
+                leaf(
+                    publisher,
+                    u32::try_from(index).expect("dataset length is bounded below u32::MAX"),
+                    *value,
+                )
+            })
             .collect();
         let mut levels: Vec<Vec<Felt>> = vec![leaves];
         let mut empty = [Felt::ZERO; COMMITTED_DATA_TREE_HEIGHT];
@@ -153,7 +166,7 @@ impl CommittedDataSet {
         &self.values
     }
     pub fn value(&self, index: u32) -> Option<Felt> {
-        self.values.get(index as usize).copied()
+        self.values.get(usize::try_from(index).expect("u32 fits supported usize")).copied()
     }
 
     /// Returns no witness for an unoccupied leaf, even when its padding hash is known.
@@ -161,7 +174,7 @@ impl CommittedDataSet {
         let value = self.value(index)?;
         let siblings = std::array::from_fn(|depth| {
             self.levels[depth]
-                .get(((index as usize) >> depth) ^ 1)
+                .get(((usize::try_from(index).expect("u32 fits supported usize")) >> depth) ^ 1)
                 .copied()
                 .unwrap_or(self.empty[depth])
         });
@@ -205,7 +218,9 @@ impl CommittedDataWitnesses {
         index: Felt,
     ) -> Result<Option<Felt>, CommittedDataError> {
         let checked_index: u32 = index.try_into().map_err(|_| CommittedDataError::InvalidIndex)?;
-        if checked_index as usize >= MAX_COMMITTED_DATA_VALUES {
+        if usize::try_from(checked_index).expect("u32 fits supported usize")
+            >= MAX_COMMITTED_DATA_VALUES
+        {
             return Err(CommittedDataError::InvalidIndex);
         }
         if let Some(witness) = self.get(root, publisher, index) {
@@ -229,6 +244,7 @@ pub fn read_value(
     selector: Felt,
     calldata: &[Felt],
     remaining_gas: &mut u64,
+    availability_failure: &mut Option<CommittedDataError>,
 ) -> Result<Felt, SyscallExecutorBaseError> {
     let invalid = |info: &str| SyscallExecutorBaseError::InvalidSyscallInput {
         input: selector,
@@ -236,12 +252,17 @@ pub fn read_value(
     };
     validate_read_request(selector, calldata, *remaining_gas)?;
     let gas = *remaining_gas - COMMITTED_DATA_READ_GAS;
-    let value = witnesses
-        .value(calldata[0], publisher, calldata[1])
-        .map_err(|error| invalid(&error.to_string()))?
-        .ok_or_else(|| {
-            invalid("committed-data witness unavailable for exact root, publisher and index")
-        })?;
+    let value = match witnesses.value(calldata[0], publisher, calldata[1]) {
+        Ok(Some(value)) => value,
+        result => {
+            let error = result.err().unwrap_or(CommittedDataError::Unavailable);
+            let syscall_error = invalid(&error.to_string());
+            // This marker survives nested-call error handling. The transaction boundary must
+            // reject unavailable data rather than commit an unprovable reverted receipt.
+            availability_failure.get_or_insert(error);
+            return Err(syscall_error);
+        }
+    };
     *remaining_gas = gas;
     Ok(value)
 }
@@ -362,17 +383,43 @@ mod tests {
         let cache = CommittedDataWitnesses::new(vec![tree.witness(0).unwrap()]).unwrap();
         let mut gas = COMMITTED_DATA_READ_GAS;
         let selector = selector_from_name("get_value").0;
+        let mut failure = None;
         assert!(
-            read_value(&cache, Felt::TWO, selector, &[tree.root(), Felt::ZERO], &mut gas).is_err()
+            read_value(
+                &cache,
+                Felt::TWO,
+                selector,
+                &[tree.root(), Felt::ZERO],
+                &mut gas,
+                &mut failure
+            )
+            .is_err()
         );
         assert_eq!(gas, COMMITTED_DATA_READ_GAS);
+        assert!(matches!(failure, Some(CommittedDataError::Unavailable)));
         assert_eq!(
-            read_value(&cache, Felt::ONE, selector, &[tree.root(), Felt::ZERO], &mut gas).unwrap(),
+            read_value(
+                &cache,
+                Felt::ONE,
+                selector,
+                &[tree.root(), Felt::ZERO],
+                &mut gas,
+                &mut failure
+            )
+            .unwrap(),
             Felt::from(42_u32)
         );
         assert_eq!(gas, 0);
         assert!(
-            read_value(&cache, Felt::ONE, selector, &[tree.root(), Felt::ZERO], &mut gas).is_err()
+            read_value(
+                &cache,
+                Felt::ONE,
+                selector,
+                &[tree.root(), Felt::ZERO],
+                &mut gas,
+                &mut failure
+            )
+            .is_err()
         );
         assert!(cache.value(tree.root(), Felt::ONE, Felt::MAX).is_err());
         assert!(

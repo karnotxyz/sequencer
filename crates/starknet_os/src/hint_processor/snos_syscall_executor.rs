@@ -225,7 +225,7 @@ impl<S: StateReader> SyscallExecutor for SnosHintProcessor<'_, S> {
             // The committed_data branch constrains this response in place; ordinary calls instead
             // relocate their temporary response to the inner Cairo execution's return segment.
             let start_ptr = vm.add_memory_segment();
-            vm.load_data(start_ptr, &[MaybeRelocatable::from(Felt::from(witness.value))])?;
+            vm.load_data(start_ptr, &[MaybeRelocatable::from(witness.value)])?;
             let segment = ReadOnlySegment { start_ptr, length: 1 };
             return Ok(CallContractResponse { segment });
         }

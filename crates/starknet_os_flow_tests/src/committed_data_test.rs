@@ -21,7 +21,7 @@ fn witness(publisher: Felt, value: Felt) -> CommittedDataWitness {
         Felt::from_hex_unchecked("0x434f4d4d49545445445f444154415f5631"),
         publisher,
         Felt::from(index),
-        Felt::from(value),
+        value,
     ]);
     for (depth, sibling) in siblings.iter().enumerate() {
         root = if (index >> depth) & 1 == 0 {
@@ -53,7 +53,7 @@ async fn prepare() -> TestRunner<DictStateReader> {
         let calldata = create_calldata(
             publisher,
             "test_committed_data_read",
-            &[Felt::from(w.index), Felt::from(w.value)],
+            &[Felt::from(w.index), w.value],
         );
         builder.add_funded_account_invoke(invoke_tx_args! { calldata });
     }
@@ -116,7 +116,7 @@ async fn committed_data_full_500k_snapshot_os_pie() {
             let calldata = create_calldata(
                 publisher,
                 "test_committed_data_read",
-                &[Felt::from(index), Felt::from(w.value)],
+                &[Felt::from(index), w.value],
             );
             builder.add_funded_account_invoke(invoke_tx_args! { calldata });
             witnesses.push(w);

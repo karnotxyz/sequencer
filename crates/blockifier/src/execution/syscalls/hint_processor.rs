@@ -543,6 +543,7 @@ impl SyscallExecutor for SyscallHintProcessor<'_> {
                 selector.0,
                 &request.calldata.0,
                 remaining_gas,
+                &mut syscall_handler.base.context.committed_data_failure,
             )?;
             let segment = create_retdata_segment(vm, syscall_handler, &[value])?;
             return Ok(CallContractResponse { segment });

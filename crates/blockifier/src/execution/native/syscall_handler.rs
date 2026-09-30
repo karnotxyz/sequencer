@@ -517,6 +517,7 @@ impl StarknetSyscallHandler for &mut NativeSyscallHandler<'_> {
                 entry_point_selector,
                 calldata,
                 remaining_gas,
+                &mut self.base.context.committed_data_failure,
             )
             .map_err(|e| self.handle_error(remaining_gas, e.into()))?;
             log::debug!(

@@ -741,6 +741,11 @@ impl AccountTransaction {
         let execution_result =
             self.run_execute(&mut execution_state, &mut execution_context, remaining_gas);
 
+        if let Some(error) = execution_context.committed_data_failure.take() {
+            execution_state.abort();
+            return Err(TransactionExecutionError::CommittedDataAvailability(error));
+        }
+
         // Pre-compute cost in case of revert.
         let execution_steps_consumed =
             n_allotted_execution_steps - execution_context.n_remaining_steps();

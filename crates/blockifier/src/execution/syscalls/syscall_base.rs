@@ -103,7 +103,7 @@ impl<'state> SyscallHandlerBase<'state> {
         {
             self.context.subtract_steps(resources.n_steps);
         }
-        self.committed_data_resources += &resources;
+        self.committed_data_resources += resources;
     }
 
     pub fn new(
