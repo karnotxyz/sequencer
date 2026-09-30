@@ -277,5 +277,17 @@ async fn committed_data_unapproved_reader_produces_provable_revert_without_witne
 
 #[tokio::test]
 async fn committed_data_virtual_os_binds_adapter_policy() {
-    prepare().await.run_virtual().validate();
+    let contract = FeatureContract::TestContract(CairoVersion::Cairo1(RunnableCairo1::Casm));
+    let (mut builder, [publisher]) =
+        TestBuilder::create_standard_virtual([(contract, calldata![Felt::ZERO, Felt::ZERO])]).await;
+    let readers = starknet_api::committed_data::CommittedDataReaders::new(vec![publisher]).unwrap();
+    builder.initial_state.block_context.committed_data_activation_block = Some(0);
+    builder.initial_state.block_context.committed_data_readers = readers.clone();
+    builder.os_hints_config.committed_data_activation_block = Some(0);
+    builder.os_hints_config.committed_data_readers = readers;
+    // Virtual OS accepts a single invoke. Its output must bind the configured policy even
+    // when this particular transaction only performs an ordinary storage read.
+    let calldata = create_calldata(publisher, "test_storage_read", &[Felt::from(45)]);
+    builder.add_funded_account_invoke(invoke_tx_args! { calldata });
+    builder.build().await.run_virtual_and_validate();
 }
