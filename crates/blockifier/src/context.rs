@@ -1,7 +1,7 @@
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
-use apollo_config::dumping::{prepend_sub_config_name, ser_param, SerializeConfig};
+use apollo_config::dumping::{SerializeConfig, prepend_sub_config_name, ser_param};
 use apollo_config::{ParamPath, ParamPrivacyInput, SerializedParam};
 use serde::{Deserialize, Serialize};
 use starknet_api::block::{BlockInfo, BlockNumber, BlockTimestamp, FeeType, GasPriceVector};
@@ -127,6 +127,11 @@ pub struct BlockContext {
     pub(crate) chain_info: ChainInfo,
     pub(crate) versioned_constants: VersionedConstants,
     pub bouncer_config: BouncerConfig,
+    /// Inclusive activation height; None preserves ordinary contract dispatch.
+    pub committed_data_activation_block: Option<u64>,
+    pub committed_data_readers: starknet_api::committed_data::CommittedDataReaders,
+    pub committed_data_witnesses:
+        Arc<crate::execution::syscalls::committed_data::CommittedDataWitnesses>,
 }
 
 impl BlockContext {
@@ -136,7 +141,20 @@ impl BlockContext {
         versioned_constants: VersionedConstants,
         bouncer_config: BouncerConfig,
     ) -> Self {
-        BlockContext { block_info, chain_info, versioned_constants, bouncer_config }
+        BlockContext {
+            block_info,
+            chain_info,
+            versioned_constants,
+            bouncer_config,
+            committed_data_activation_block: None,
+            committed_data_readers: Default::default(),
+            committed_data_witnesses: Default::default(),
+        }
+    }
+
+    pub fn committed_data_is_active(&self) -> bool {
+        self.committed_data_activation_block
+            .is_some_and(|height| self.block_info.block_number.0 >= height)
     }
 
     pub fn block_info(&self) -> &BlockInfo {

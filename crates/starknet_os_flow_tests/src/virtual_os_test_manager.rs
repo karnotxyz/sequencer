@@ -1,8 +1,8 @@
 use starknet_api::transaction::fields::VIRTUAL_OS_OUTPUT_VERSION;
 use starknet_os::io::virtual_os_output::{
-    compute_messages_to_l1_hashes,
     VirtualOsOutput,
     VirtualOsRunnerOutput,
+    compute_messages_to_l1_hashes,
 };
 use starknet_os::runner::run_virtual_os;
 
@@ -34,8 +34,16 @@ impl<S: FlowTestState> TestRunner<S> {
         // Create expected values before running the virtual OS (os_hints is consumed).
         let first_block = self.os_hints.os_input.os_block_inputs.first().unwrap();
         // The virtual os does not support state diff encryption.
-        let config_hash =
-            self.os_hints.os_hints_config.chain_info.compute_virtual_os_config_hash().unwrap();
+        let config_hash = self
+            .os_hints
+            .os_hints_config
+            .chain_info
+            .compute_os_config_hash_with_committed_data(
+                None,
+                self.os_hints.os_hints_config.committed_data_activation_block,
+                &self.os_hints.os_hints_config.committed_data_readers,
+            )
+            .unwrap();
 
         let messages_to_l1_hashes = compute_messages_to_l1_hashes(&self.messages_to_l1);
         let expected_virtual_os_output = VirtualOsOutput {

@@ -146,6 +146,12 @@ from starkware.starknet.core.os.transaction_hash.transaction_hash import (
     update_pedersen_in_builtin_ptrs,
 )
 
+from starkware.starknet.core.os.execution.committed_data import (
+    COMMITTED_DATA_CONTRACT_ADDRESS,
+    execute_committed_data_call,
+    committed_data_is_active,
+)
+
 // Returns a failure response with a single felt.
 @known_ap_change
 func write_failure_response{syscall_ptr: felt*}(remaining_gas: felt, failure_felt: felt) {
@@ -176,10 +182,15 @@ func execute_call_contract{
     revert_log: RevertLogEntry*,
     outputs: OsCarriedOutputs*,
 }(block_context: BlockContext*, caller_execution_context: ExecutionContext*) {
-    let request = cast(syscall_ptr + RequestHeader.SIZE, CallContractRequest*);
+    alloc_locals;
+    let (local committed_data_active) = committed_data_is_active(block_context);
+    local request: CallContractRequest* = cast(
+        syscall_ptr + RequestHeader.SIZE, CallContractRequest*
+    );
     let (success, remaining_gas) = reduce_syscall_base_gas(
         specific_base_gas_cost=CALL_CONTRACT_GAS_COST, request_struct_size=CallContractRequest.SIZE
     );
+    local remaining_gas = remaining_gas;
     if (success == FALSE) {
         // Not enough gas to execute the syscall.
         return ();
@@ -189,6 +200,19 @@ func execute_call_contract{
         return ();
     }
 
+    if (request.contract_address == COMMITTED_DATA_CONTRACT_ADDRESS) {
+        if (committed_data_active != 0) {
+            execute_committed_data_call(
+                request=request,
+                publisher=caller_execution_context.execution_info.contract_address,
+                remaining_gas=remaining_gas,
+                n_readers=block_context.os_global_context.starknet_os_config.n_committed_data_readers,
+                readers=block_context.os_global_context.starknet_os_config.committed_data_readers,
+            );
+            return ();
+        }
+        // The ordinary dispatch below also applies before activation.
+    }
     tempvar contract_address = request.contract_address;
     let (state_entry: StateEntry*) = dict_read{dict_ptr=contract_state_changes}(
         key=contract_address

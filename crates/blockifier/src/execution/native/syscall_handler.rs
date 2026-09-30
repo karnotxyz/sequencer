@@ -50,7 +50,7 @@ use crate::execution::native::utils::{
 };
 use crate::execution::secp;
 use crate::execution::syscalls::common_syscall_logic::base_keccak;
-use crate::execution::syscalls::hint_processor::{SyscallExecutionError, OUT_OF_GAS_ERROR_FELT};
+use crate::execution::syscalls::hint_processor::{OUT_OF_GAS_ERROR_FELT, SyscallExecutionError};
 use crate::execution::syscalls::syscall_base::SyscallHandlerBase;
 use crate::execution::syscalls::vm_syscall_utils::{
     SelfOrRevert,
@@ -493,11 +493,6 @@ impl StarknetSyscallHandler for &mut NativeSyscallHandler<'_> {
         let contract_address = ContractAddress::try_from(address)
             .map_err(|error| self.handle_error(remaining_gas, error.into()))?;
 
-        let class_hash = self
-            .base
-            .state
-            .get_class_hash_at(contract_address)
-            .map_err(|e| self.handle_error(remaining_gas, e.into()))?;
         if self.base.context.execution_mode == ExecutionMode::Validate
             && self.base.call.storage_address != contract_address
         {
@@ -512,6 +507,33 @@ impl StarknetSyscallHandler for &mut NativeSyscallHandler<'_> {
             .maybe_block_direct_execute_call(selector)
             .map_err(|e| self.handle_error(remaining_gas, e))?;
 
+        if address == crate::execution::syscalls::committed_data::COMMITTED_DATA_ADDRESS
+            && self.base.context.tx_context.block_context.committed_data_is_active()
+        {
+            self.base.account_committed_data_read();
+            let value = crate::execution::syscalls::committed_data::read_value(
+                &self.base.context.tx_context.block_context.committed_data_readers,
+                &self.base.context.tx_context.block_context.committed_data_witnesses,
+                *self.base.call.storage_address.0.key(),
+                entry_point_selector,
+                calldata,
+                remaining_gas,
+                &mut self.base.context.committed_data_failure,
+            )
+            .map_err(|e| self.handle_error(remaining_gas, e.into()))?;
+            log::debug!(
+                target: "committed_data_native",
+                "Native committed_data system call completed: publisher={}",
+                self.base.call.storage_address
+            );
+            return Ok(vec![value]);
+        }
+
+        let class_hash = self
+            .base
+            .state
+            .get_class_hash_at(contract_address)
+            .map_err(|e| self.handle_error(remaining_gas, e.into()))?;
         let wrapper_calldata = Calldata(Arc::new(calldata.to_vec()));
 
         let entry_point = CallEntryPoint {

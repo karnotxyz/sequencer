@@ -16,10 +16,9 @@ use starknet_types_core::hash::{Pedersen, StarkHash as CoreStarkHash};
 
 use crate::crypto::utils::PublicKey;
 use crate::hash::{HashOutput, PoseidonHash, StarkHash};
-use crate::hash_cache;
 use crate::serde_utils::{BytesAsHex, PrefixedBytesAsHex};
 use crate::transaction::fields::{Calldata, ContractAddressSalt};
-use crate::{StarknetApiError, StarknetApiResult, impl_from_through_intermediate};
+use crate::{StarknetApiError, StarknetApiResult, hash_cache, impl_from_through_intermediate};
 
 /// Felt.
 pub fn ascii_as_felt(ascii_str: &str) -> Result<Felt, StarknetApiError> {
@@ -137,6 +136,16 @@ impl OsChainInfo {
         &self,
         public_keys: Option<&Vec<Felt>>,
     ) -> Result<Felt, StarknetApiError> {
+        self.compute_os_config_hash_with_committed_data(public_keys, None, &Default::default())
+    }
+
+    /// Binds extension activation and adapter admission into settlement while preserving the hash when disabled.
+    pub fn compute_os_config_hash_with_committed_data(
+        &self,
+        public_keys: Option<&Vec<Felt>>,
+        activation_block: Option<u64>,
+        readers: &crate::committed_data::CommittedDataReaders,
+    ) -> Result<Felt, StarknetApiError> {
         let mut data = vec![
             STARKNET_OS_CONFIG_HASH_VERSION,
             (&self.chain_id).try_into().map_err(|_| StarknetApiError::OutOfRange {
@@ -147,6 +156,12 @@ impl OsChainInfo {
         let public_keys_hash = compute_public_keys_hash(public_keys);
         if public_keys_hash != DEFAULT_PUBLIC_KEYS_HASH {
             data.push(public_keys_hash);
+        }
+        if let Some(block) = activation_block {
+            data.push(Felt::from_hex_unchecked("0x434f4d4d49545445445f444154415f5631"));
+            data.push(Felt::from(block) + Felt::ONE);
+            data.push(Felt::from(readers.as_slice().len()));
+            data.extend(readers.as_slice().iter().map(|reader| *reader.0.key()));
         }
         Ok(Pedersen::hash_array(&data))
     }

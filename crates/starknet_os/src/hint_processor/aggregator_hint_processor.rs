@@ -49,6 +49,10 @@ pub struct AggregatorInput {
     pub fee_token_address: Felt,
     pub chain_id: Felt,
     pub public_keys: Option<Vec<Felt>>,
+    #[serde(default)]
+    pub committed_data_activation_block: Option<u64>,
+    #[serde(default)]
+    pub committed_data_readers: starknet_api::committed_data::CommittedDataReaders,
 }
 
 impl AggregatorInput {

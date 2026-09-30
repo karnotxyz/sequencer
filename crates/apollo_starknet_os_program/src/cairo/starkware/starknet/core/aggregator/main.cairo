@@ -128,7 +128,7 @@ func output_blocks{
     );
 }
 
-func check_public_keys{hash_ptr: HashBuiltin*}(
+func check_public_keys{hash_ptr: HashBuiltin*, range_check_ptr}(
     n_public_keys: felt, public_keys: felt*, starknet_os_config_hash: felt
 ) {
     let (public_keys_hash) = get_public_keys_hash(
@@ -136,9 +136,17 @@ func check_public_keys{hash_ptr: HashBuiltin*}(
     );
     tempvar chain_id;
     tempvar fee_token_address;
+    tempvar committed_data_activation;
+    tempvar n_committed_data_readers;
+    tempvar committed_data_readers: felt*;
     %{ GetChainIdAndFeeTokenAddressFromInput %}
     tempvar guessed_starknet_os_config = new StarknetOsConfig(
-        chain_id=chain_id, fee_token_address=fee_token_address, public_keys_hash=public_keys_hash
+        chain_id=chain_id,
+        fee_token_address=fee_token_address,
+        public_keys_hash=public_keys_hash,
+        committed_data_activation=committed_data_activation,
+        n_committed_data_readers=n_committed_data_readers,
+        committed_data_readers=committed_data_readers,
     );
     let (guessed_starknet_os_config_hash) = get_starknet_os_config_hash(
         starknet_os_config=guessed_starknet_os_config
