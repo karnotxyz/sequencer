@@ -165,6 +165,12 @@ impl CommittedDataSet {
     pub fn values(&self) -> &[Felt] {
         &self.values
     }
+
+    /// Occupied internal-node prefixes in ascending height, excluding the root.
+    /// Persisting these permits bounded path reads without reconstructing an entire dataset.
+    pub fn internal_levels(&self) -> impl Iterator<Item = &[Felt]> {
+        self.levels[1..COMMITTED_DATA_TREE_HEIGHT].iter().map(Vec::as_slice)
+    }
     pub fn value(&self, index: u32) -> Option<Felt> {
         self.values.get(usize::try_from(index).expect("u32 fits supported usize")).copied()
     }
@@ -286,7 +292,8 @@ pub fn validate_read_request(
     Ok(())
 }
 
-fn leaf(publisher: Felt, index: u32, value: Felt) -> Felt {
+/// Domain-separated leaf shared with authenticated dataset persistence.
+pub fn leaf(publisher: Felt, index: u32, value: Felt) -> Felt {
     Poseidon::hash_array(&[COMMITTED_DATA_LEAF_DOMAIN, publisher, Felt::from(index), value])
 }
 
