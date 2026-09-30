@@ -107,6 +107,10 @@ pub(crate) fn get_chain_id_and_fee_token_address_from_input(
         .committed_data_activation_block
         .map_or(Felt::ZERO, |height| Felt::from(height) + Felt::ONE);
     ctx.insert_value(Ids::CommittedDataActivation, activation)?;
+    crate::hints::hint_implementation::committed_data::insert_committed_data_readers(
+        &mut ctx,
+        &hint_processor.input.committed_data_readers,
+    )?;
     let chain_id: Felt = hint_processor.input.chain_id;
     let fee_token_address: Felt = hint_processor.input.fee_token_address;
     ctx.insert_value(Ids::ChainId, chain_id)?;

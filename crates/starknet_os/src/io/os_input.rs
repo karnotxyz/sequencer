@@ -77,6 +77,8 @@ pub struct OsHintsConfig {
     /// Inclusive activation height, committed in the OS configuration hash. None disables it.
     #[cfg_attr(feature = "deserialize", serde(default))]
     pub committed_data_activation_block: Option<u64>,
+    #[cfg_attr(feature = "deserialize", serde(default))]
+    pub committed_data_readers: starknet_api::committed_data::CommittedDataReaders,
     /// Untrusted private witnesses. Cairo, not this input, establishes membership.
     #[cfg_attr(
         feature = "deserialize",

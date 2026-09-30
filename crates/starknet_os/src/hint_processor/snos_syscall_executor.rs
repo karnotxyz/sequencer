@@ -198,11 +198,6 @@ impl<S: StateReader> SyscallExecutor for SnosHintProcessor<'_, S> {
                 input: request.function_selector.0,
                 info: info.into(),
             };
-            blockifier::execution::syscalls::committed_data::validate_read_request(
-                request.function_selector.0,
-                &request.calldata.0,
-                *remaining_gas,
-            )?;
             let publisher = *syscall_handler
                 .get_mut_current_execution_helper()?
                 .tx_execution_iter
@@ -213,6 +208,15 @@ impl<S: StateReader> SyscallExecutor for SnosHintProcessor<'_, S> {
                 .storage_address
                 .0
                 .key();
+            blockifier::execution::syscalls::committed_data::validate_reader(
+                &syscall_handler.os_hints_config.committed_data_readers,
+                publisher,
+            )?;
+            blockifier::execution::syscalls::committed_data::validate_read_request(
+                request.function_selector.0,
+                &request.calldata.0,
+                *remaining_gas,
+            )?;
             let witness = syscall_handler
                 .committed_data_witness(request.calldata.0[0], publisher, request.calldata.0[1])
                 .ok_or_else(|| invalid("committed_data witness unavailable"))?;

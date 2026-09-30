@@ -243,8 +243,20 @@ impl CommittedDataWitnesses {
     }
 }
 
-/// Shared VM/Native fast path. Missing data aborts execution instead of inventing a value.
+/// Rejects unapproved adapters before their choice of root can trigger host unavailability.
+pub fn validate_reader(
+    readers: &starknet_api::committed_data::CommittedDataReaders,
+    publisher: Felt,
+) -> Result<(), SyscallExecutorBaseError> {
+    if !readers.contains(publisher) {
+        return Err(SyscallExecutorBaseError::Revert { error_data: vec![INVALID_ARGUMENT_FELT] });
+    }
+    Ok(())
+}
+
+/// Shared VM/Native value path. Admission precedes all witness access.
 pub fn read_value(
+    readers: &starknet_api::committed_data::CommittedDataReaders,
     witnesses: &CommittedDataWitnesses,
     publisher: Felt,
     selector: Felt,
@@ -252,6 +264,7 @@ pub fn read_value(
     remaining_gas: &mut u64,
     availability_failure: &mut Option<CommittedDataError>,
 ) -> Result<Felt, SyscallExecutorBaseError> {
+    validate_reader(readers, publisher)?;
     let invalid = |info: &str| SyscallExecutorBaseError::InvalidSyscallInput {
         input: selector,
         info: info.into(),
@@ -388,11 +401,13 @@ mod tests {
     fn reads_require_exact_tuple_and_charge_only_successful_reads() {
         let tree = CommittedDataSet::new(Felt::ONE, vec![Felt::from(42_u32)]).unwrap();
         let cache = CommittedDataWitnesses::new(vec![tree.witness(0).unwrap()]).unwrap();
+        let readers = "0x1,0x2".parse().unwrap();
         let mut gas = COMMITTED_DATA_READ_GAS;
         let selector = selector_from_name("get_value").0;
         let mut failure = None;
         assert!(
             read_value(
+                &readers,
                 &cache,
                 Felt::TWO,
                 selector,
@@ -406,6 +421,7 @@ mod tests {
         assert!(matches!(failure, Some(CommittedDataError::Unavailable)));
         assert_eq!(
             read_value(
+                &readers,
                 &cache,
                 Felt::ONE,
                 selector,
@@ -419,6 +435,7 @@ mod tests {
         assert_eq!(gas, 0);
         assert!(
             read_value(
+                &readers,
                 &cache,
                 Felt::ONE,
                 selector,

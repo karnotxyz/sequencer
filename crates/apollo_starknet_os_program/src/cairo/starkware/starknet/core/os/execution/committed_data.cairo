@@ -9,6 +9,7 @@ const COMMITTED_DATA_TREE_HEIGHT = 19;
 const COMMITTED_DATA_LEAF_DOMAIN = 'COMMITTED_DATA_V1';
 // Experimental gas charge; must be profiled before production activation.
 const COMMITTED_DATA_READ_GAS = 1000000;
+const MAX_COMMITTED_DATA_READERS = 64;
 
 // The publisher is part of the leaf domain: an identical index in another feed is not interchangeable.
 // Root must come from authenticated, current contract state, never just from a witness hint.
@@ -54,11 +55,24 @@ from starkware.starknet.core.os.builtins import BuiltinPointers, SelectableBuilt
 
 const COMMITTED_DATA_GET_VALUE_SELECTOR = 1088514629534027837943348492744869453336870381453867699032131389309368223152;
 
-func execute_committed_data_call{range_check_ptr, syscall_ptr: felt*, builtin_ptrs: BuiltinPointers*}(
-    request: CallContractRequest*, publisher: felt, remaining_gas: felt
+func execute_committed_data_call{
+    range_check_ptr, syscall_ptr: felt*, builtin_ptrs: BuiltinPointers*
+}(
+    request: CallContractRequest*,
+    publisher: felt,
+    remaining_gas: felt,
+    n_readers: felt,
+    readers: felt*,
 ) {
     alloc_locals;
     assert request.contract_address = COMMITTED_DATA_CONTRACT_ADDRESS;
+    assert_nn(n_readers);
+    assert_nn(MAX_COMMITTED_DATA_READERS - n_readers);
+    let (approved) = committed_data_reader_is_approved(publisher, n_readers, readers);
+    if (approved == 0) {
+        committed_data_failure(remaining_gas, ERROR_INVALID_ARGUMENT);
+        return ();
+    }
     if (request.selector != COMMITTED_DATA_GET_VALUE_SELECTOR) {
         committed_data_failure(remaining_gas, ERROR_INVALID_ARGUMENT);
         return ();
@@ -118,6 +132,20 @@ func execute_committed_data_call{range_check_ptr, syscall_ptr: felt*, builtin_pt
     assert response.retdata_start[0] = committed_data_value;
     let syscall_ptr = syscall_ptr + ResponseHeader.SIZE + CallContractResponse.SIZE;
     return ();
+}
+
+// Bounded by the configuration and the call handler. The list itself is committed in the
+// OS configuration hash, so a hint cannot grant additional readers admission.
+func committed_data_reader_is_approved(publisher: felt, n_readers: felt, readers: felt*) -> (
+    approved: felt
+) {
+    if (n_readers == 0) {
+        return (approved=0);
+    }
+    if (readers[0] == publisher) {
+        return (approved=1);
+    }
+    return committed_data_reader_is_approved(publisher, n_readers - 1, readers + 1);
 }
 
 // Activation is part of the OS config hash accepted by settlement, never a free hint flag.

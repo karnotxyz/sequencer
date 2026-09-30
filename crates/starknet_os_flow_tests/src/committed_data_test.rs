@@ -42,6 +42,9 @@ async fn prepare() -> TestRunner<DictStateReader> {
         vec![witness(**publisher, Felt::MAX), witness(**publisher, Felt::from(54321_u32))];
     builder.initial_state.block_context.committed_data_activation_block = Some(0);
     builder.os_hints_config.committed_data_activation_block = Some(0);
+    let readers = starknet_api::committed_data::CommittedDataReaders::new(vec![publisher]).unwrap();
+    builder.initial_state.block_context.committed_data_readers = readers.clone();
+    builder.os_hints_config.committed_data_readers = readers;
     builder.initial_state.block_context.committed_data_witnesses =
         Arc::new(CommittedDataWitnesses::new(witnesses.clone()).unwrap());
     builder.os_hints_config.committed_data_witnesses = witnesses.clone();
@@ -50,11 +53,8 @@ async fn prepare() -> TestRunner<DictStateReader> {
     for w in &witnesses {
         let calldata = create_calldata(publisher, "test_storage_write", &[Felt::from(45), w.root]);
         builder.add_funded_account_invoke(invoke_tx_args! { calldata });
-        let calldata = create_calldata(
-            publisher,
-            "test_committed_data_read",
-            &[Felt::from(w.index), w.value],
-        );
+        let calldata =
+            create_calldata(publisher, "test_committed_data_read", &[Felt::from(w.index), w.value]);
         builder.add_funded_account_invoke(invoke_tx_args! { calldata });
     }
     builder.build().await
@@ -124,6 +124,9 @@ async fn committed_data_full_500k_snapshot_os_pie() {
     }
     builder.initial_state.block_context.committed_data_activation_block = Some(0);
     builder.os_hints_config.committed_data_activation_block = Some(0);
+    let readers = starknet_api::committed_data::CommittedDataReaders::new(vec![publisher]).unwrap();
+    builder.initial_state.block_context.committed_data_readers = readers.clone();
+    builder.os_hints_config.committed_data_readers = readers;
     builder.initial_state.block_context.committed_data_witnesses =
         Arc::new(CommittedDataWitnesses::new(witnesses.clone()).unwrap());
     builder.os_hints_config.committed_data_witnesses = witnesses;
@@ -171,13 +174,20 @@ async fn committed_data_full_os_output_aggregates_only_with_matching_activation(
     let runner = prepare().await;
     let chain_info = runner.os_hints.os_hints_config.chain_info.clone();
     let public_keys = runner.os_hints.os_hints_config.public_keys.clone();
+    let readers = runner.os_hints.os_hints_config.committed_data_readers.clone();
     let output = runner.run();
     output.perform_default_validations();
     let child = output.runner_output.raw_os_output;
     let mut bootloader =
         vec![Felt::ONE, Felt::from(child.len() + 2), apollo_starknet_os_program::PROGRAM_HASHES.os];
     bootloader.extend(child);
-    for activation in [Some(0), None, Some(1)] {
+    for (activation, readers) in [
+        (Some(0), readers.clone()),
+        (None, readers.clone()),
+        (Some(1), readers),
+        (Some(0), Default::default()),
+    ] {
+        let should_succeed = activation == Some(0) && !readers.as_slice().is_empty();
         let input = AggregatorInput {
             bootloader_output: Some(bootloader.clone()),
             full_output: true,
@@ -187,12 +197,13 @@ async fn committed_data_full_os_output_aggregates_only_with_matching_activation(
             public_keys: public_keys.clone(),
             da: DataAvailability::CallData,
             committed_data_activation_block: activation,
+            committed_data_readers: readers,
         };
         let result = starknet_os::runner::run_aggregator(
             cairo_vm::types::layout_name::LayoutName::all_cairo,
             input,
         );
-        if activation == Some(0) {
+        if should_succeed {
             result.unwrap().cairo_pie.run_validity_checks().unwrap();
         } else {
             assert!(result.is_err(), "aggregator must reject mismatching activation configuration");
@@ -212,6 +223,9 @@ async fn committed_data_invalid_requests_produce_provable_reverts_without_witnes
         TestBuilder::create_standard([(contract, calldata![Felt::ZERO, Felt::ZERO])]).await;
     builder.initial_state.block_context.committed_data_activation_block = Some(0);
     builder.os_hints_config.committed_data_activation_block = Some(0);
+    let readers = starknet_api::committed_data::CommittedDataReaders::new(vec![publisher]).unwrap();
+    builder.initial_state.block_context.committed_data_readers = readers.clone();
+    builder.os_hints_config.committed_data_readers = readers;
     for (selector, args) in [
         (Felt::ZERO, vec![Felt::ZERO, Felt::ZERO]),
         (selector_from_name("get_value").0, vec![Felt::ZERO]),
@@ -229,4 +243,39 @@ async fn committed_data_invalid_requests_produce_provable_reverts_without_witnes
     let output = builder.build().await.run();
     output.perform_default_validations();
     output.runner_output.cairo_pie.run_validity_checks().unwrap();
+}
+
+#[tokio::test]
+async fn committed_data_reader_policy_mismatch_cannot_replay_a_successful_read() {
+    let mut runner = prepare().await;
+    runner.os_hints.os_hints_config.committed_data_readers = Default::default();
+    assert!(
+        starknet_os::runner::run_os_stateless(
+            starknet_os::runner::DEFAULT_OS_LAYOUT,
+            runner.os_hints,
+        )
+        .is_err(),
+        "OS admission policy must match the executed call"
+    );
+}
+
+#[tokio::test]
+async fn committed_data_unapproved_reader_produces_provable_revert_without_witness() {
+    let contract = FeatureContract::TestContract(CairoVersion::Cairo1(RunnableCairo1::Casm));
+    let (mut builder, [publisher]) =
+        TestBuilder::create_standard([(contract, calldata![Felt::ZERO, Felt::ZERO])]).await;
+    builder.initial_state.block_context.committed_data_activation_block = Some(0);
+    builder.os_hints_config.committed_data_activation_block = Some(0);
+    // Empty reader policy denies before data lookup, so no private witness is needed.
+    let calldata = create_calldata(publisher, "test_committed_data_read", &[Felt::ZERO, Felt::MAX]);
+    let tx = builder.create_funded_account_invoke(invoke_tx_args! { calldata });
+    builder.add_invoke_tx(tx, Some(String::new()), None);
+    let output = builder.build().await.run();
+    output.perform_default_validations();
+    output.runner_output.cairo_pie.run_validity_checks().unwrap();
+}
+
+#[tokio::test]
+async fn committed_data_virtual_os_binds_adapter_policy() {
+    prepare().await.run_virtual().validate();
 }

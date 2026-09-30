@@ -129,6 +129,7 @@ pub struct BlockContext {
     pub bouncer_config: BouncerConfig,
     /// Inclusive activation height; None preserves ordinary contract dispatch.
     pub committed_data_activation_block: Option<u64>,
+    pub committed_data_readers: starknet_api::committed_data::CommittedDataReaders,
     pub committed_data_witnesses:
         Arc<crate::execution::syscalls::committed_data::CommittedDataWitnesses>,
 }
@@ -146,6 +147,7 @@ impl BlockContext {
             versioned_constants,
             bouncer_config,
             committed_data_activation_block: None,
+            committed_data_readers: Default::default(),
             committed_data_witnesses: Default::default(),
         }
     }

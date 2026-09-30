@@ -146,7 +146,11 @@ from starkware.starknet.core.os.transaction_hash.transaction_hash import (
     update_pedersen_in_builtin_ptrs,
 )
 
-from starkware.starknet.core.os.execution.committed_data import (COMMITTED_DATA_CONTRACT_ADDRESS, execute_committed_data_call, committed_data_is_active)
+from starkware.starknet.core.os.execution.committed_data import (
+    COMMITTED_DATA_CONTRACT_ADDRESS,
+    execute_committed_data_call,
+    committed_data_is_active,
+)
 
 // Returns a failure response with a single felt.
 @known_ap_change
@@ -180,7 +184,9 @@ func execute_call_contract{
 }(block_context: BlockContext*, caller_execution_context: ExecutionContext*) {
     alloc_locals;
     let (local committed_data_active) = committed_data_is_active(block_context);
-    local request: CallContractRequest* = cast(syscall_ptr + RequestHeader.SIZE, CallContractRequest*);
+    local request: CallContractRequest* = cast(
+        syscall_ptr + RequestHeader.SIZE, CallContractRequest*
+    );
     let (success, remaining_gas) = reduce_syscall_base_gas(
         specific_base_gas_cost=CALL_CONTRACT_GAS_COST, request_struct_size=CallContractRequest.SIZE
     );
@@ -200,6 +206,8 @@ func execute_call_contract{
                 request=request,
                 publisher=caller_execution_context.execution_info.contract_address,
                 remaining_gas=remaining_gas,
+                n_readers=block_context.os_global_context.starknet_os_config.n_committed_data_readers,
+                readers=block_context.os_global_context.starknet_os_config.committed_data_readers,
             );
             return ();
         }

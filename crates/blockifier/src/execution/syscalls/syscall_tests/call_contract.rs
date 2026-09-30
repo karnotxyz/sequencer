@@ -589,6 +589,8 @@ fn committed_data_reads_match_activation_and_execution_engine(runnable: Runnable
         state.set_storage_at(address, StorageKey::from(45_u32), tree.root()).unwrap();
         let mut context = BlockContext::create_for_testing();
         context.committed_data_activation_block = activation;
+        context.committed_data_readers =
+            starknet_api::committed_data::CommittedDataReaders::new(vec![address]).unwrap();
         context.committed_data_witnesses =
             Arc::new(CommittedDataWitnesses::new(vec![tree.witness(0).unwrap()]).unwrap());
         let call = CallEntryPoint {
@@ -605,8 +607,14 @@ fn committed_data_reads_match_activation_and_execution_engine(runnable: Runnable
                 info.execution.gas_consumed
                     >= crate::execution::syscalls::committed_data::COMMITTED_DATA_READ_GAS
             );
-            for (builtin, minimum) in &crate::execution::syscalls::committed_data::read_os_resources().builtin_instance_counter {
-                assert!(info.builtin_counters.get(&(*builtin).into()).copied().unwrap_or_default() >= *minimum);
+            for (builtin, minimum) in
+                &crate::execution::syscalls::committed_data::read_os_resources()
+                    .builtin_instance_counter
+            {
+                assert!(
+                    info.builtin_counters.get(&(*builtin).into()).copied().unwrap_or_default()
+                        >= *minimum
+                );
             }
         } else {
             assert!(result.is_err() || result.unwrap().execution.failed);
@@ -652,6 +660,9 @@ fn committed_data_unavailable_rejects_transaction_without_state_changes(runnable
         }
         let data = create_test_init_data(&block_context.chain_info, CairoVersion::Cairo1(runnable));
         let mut state = data.state;
+        block_context.committed_data_readers =
+            starknet_api::committed_data::CommittedDataReaders::new(vec![data.contract_address])
+                .unwrap();
         let tree = CommittedDataSet::new(**data.contract_address, vec![Felt::MAX]).unwrap();
         state.set_storage_at(data.contract_address, StorageKey::from(45_u32), tree.root()).unwrap();
         let before = state.to_state_diff().unwrap();
@@ -669,4 +680,46 @@ fn committed_data_unavailable_rejects_transaction_without_state_changes(runnable
         assert_eq!(state.get_nonce_at(data.account_address).unwrap(), nonce_before);
         assert_eq!(state.to_state_diff().unwrap(), before);
     }
+}
+
+#[cfg_attr(feature = "cairo_native", test_case(RunnableCairo1::Native; "native"))]
+#[test_case(RunnableCairo1::Casm; "vm")]
+fn committed_data_unapproved_reader_reverts_and_pays_fee(runnable: RunnableCairo1) {
+    use starknet_api::invoke_tx_args;
+    use starknet_types_core::felt::Felt;
+
+    use crate::execution::syscalls::committed_data::{
+        CommittedDataError,
+        CommittedDataProvider,
+        CommittedDataWitnesses,
+    };
+    use crate::transaction::test_utils::{
+        create_test_init_data,
+        default_all_resource_bounds,
+        invoke_tx_with_default_flags,
+    };
+    use crate::transaction::transactions::ExecutableTransaction;
+    #[derive(Debug)]
+    struct MustNotRead;
+    impl CommittedDataProvider for MustNotRead {
+        fn value(&self, _: Felt, _: Felt, _: u32) -> Result<Option<Felt>, CommittedDataError> {
+            panic!("unapproved caller must be rejected before provider access")
+        }
+    }
+    let mut context = BlockContext::create_for_testing();
+    context.committed_data_activation_block = Some(0);
+    context.committed_data_witnesses =
+        Arc::new(CommittedDataWitnesses::from_provider(Arc::new(MustNotRead)));
+    let data = create_test_init_data(&context.chain_info, CairoVersion::Cairo1(runnable));
+    let mut state = data.state;
+    let nonce = state.get_nonce_at(data.account_address).unwrap();
+    let tx = invoke_tx_with_default_flags(invoke_tx_args! {
+        resource_bounds: default_all_resource_bounds(),
+        sender_address: data.account_address,
+        calldata: create_calldata(data.contract_address, "test_committed_data_read", &[Felt::ZERO, Felt::MAX]),
+    });
+    let info = tx.execute(&mut state, &context).unwrap();
+    assert!(info.revert_error.is_some());
+    assert!(info.receipt.fee.0 > 0);
+    assert_ne!(state.get_nonce_at(data.account_address).unwrap(), nonce);
 }

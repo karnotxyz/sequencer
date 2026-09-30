@@ -100,6 +100,7 @@ impl From<VirtualOsBlockInput> for OsHints {
             os_input,
             os_hints_config: OsHintsConfig {
                 committed_data_activation_block: None,
+                committed_data_readers: Default::default(),
                 committed_data_witnesses: Vec::new(),
                 debug_mode: false,
                 full_output: false,

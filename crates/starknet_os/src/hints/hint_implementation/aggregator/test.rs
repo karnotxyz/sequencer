@@ -790,6 +790,7 @@ fn test_aggregator(
         chain_id: Felt::ZERO,
         public_keys: None,
         committed_data_activation_block: None,
+        committed_data_readers: Default::default(),
     };
 
     // Create the aggregator hint processor.

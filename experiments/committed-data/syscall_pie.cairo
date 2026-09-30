@@ -34,6 +34,8 @@ func main{output_ptr: felt*, range_check_ptr, poseidon_ptr: PoseidonBuiltin*}() 
     local address;
     local selector;
     local gas;
+    local n_readers;
+    local readers: felt*;
     %{
         ids.root = int(program_input['root'])
         ids.publisher = int(program_input['publisher'])
@@ -42,6 +44,9 @@ func main{output_ptr: felt*, range_check_ptr, poseidon_ptr: PoseidonBuiltin*}() 
         ids.address = int(program_input.get('address', ids.COMMITTED_DATA_CONTRACT_ADDRESS))
         ids.selector = int(program_input.get('selector', ids.COMMITTED_DATA_GET_VALUE_SELECTOR))
         ids.gas = int(program_input.get('gas', 2000000))
+        approved = program_input.get('readers', [ids.publisher])
+        ids.n_readers = len(approved)
+        ids.readers = segments.gen_arg([int(x) for x in approved])
     %}
     local calldata: felt* = new (root, index);
     local request: CallContractRequest* = new CallContractRequest(
@@ -75,7 +80,13 @@ func main{output_ptr: felt*, range_check_ptr, poseidon_ptr: PoseidonBuiltin*}() 
         ),
     );
     with syscall_ptr, builtin_ptrs {
-        execute_committed_data_call(request=request, publisher=publisher, remaining_gas=gas);
+        execute_committed_data_call(
+            request=request,
+            publisher=publisher,
+            remaining_gas=gas,
+            n_readers=n_readers,
+            readers=readers,
+        );
     }
     let poseidon_ptr = builtin_ptrs.selectable.poseidon;
     assert [output_ptr] = address;

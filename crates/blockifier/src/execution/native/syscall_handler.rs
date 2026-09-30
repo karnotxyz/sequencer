@@ -512,6 +512,7 @@ impl StarknetSyscallHandler for &mut NativeSyscallHandler<'_> {
         {
             self.base.account_committed_data_read();
             let value = crate::execution::syscalls::committed_data::read_value(
+                &self.base.context.tx_context.block_context.committed_data_readers,
                 &self.base.context.tx_context.block_context.committed_data_witnesses,
                 *self.base.call.storage_address.0.key(),
                 entry_point_selector,
