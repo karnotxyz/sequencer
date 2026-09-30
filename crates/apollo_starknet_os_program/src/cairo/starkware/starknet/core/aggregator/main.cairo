@@ -136,9 +136,11 @@ func check_public_keys{hash_ptr: HashBuiltin*}(
     );
     tempvar chain_id;
     tempvar fee_token_address;
+    tempvar committed_data_activation;
     %{ GetChainIdAndFeeTokenAddressFromInput %}
     tempvar guessed_starknet_os_config = new StarknetOsConfig(
-        chain_id=chain_id, fee_token_address=fee_token_address, public_keys_hash=public_keys_hash
+        chain_id=chain_id, fee_token_address=fee_token_address, public_keys_hash=public_keys_hash,
+        committed_data_activation=committed_data_activation
     );
     let (guessed_starknet_os_config_hash) = get_starknet_os_config_hash(
         starknet_os_config=guessed_starknet_os_config

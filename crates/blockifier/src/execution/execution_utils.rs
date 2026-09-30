@@ -315,7 +315,9 @@ pub fn execute_deployment(
             ConstructorEntryPointExecutionError::new(error.into(), &ctor_context, None)
         })?;
     if current_class_hash != ClassHash::default()
-        || *deployed_contract_address.0.key() == crate::execution::syscalls::oracle::ORACLE_ADDRESS
+        || (context.tx_context.block_context.committed_data_is_active()
+            && *deployed_contract_address.0.key()
+                == crate::execution::syscalls::committed_data::COMMITTED_DATA_ADDRESS)
     {
         return Err(ConstructorEntryPointExecutionError::new(
             StateError::UnavailableContractAddress(deployed_contract_address).into(),

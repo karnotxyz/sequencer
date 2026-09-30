@@ -20,6 +20,8 @@ struct StarknetOsConfig {
     // The default hash is 0, indicating that encryption will not happen and that there are no
     // public keys, as is the case in Starknet environments.
     public_keys_hash: felt,
+    // Zero disables this extension; otherwise activation block + 1. Bound into the config hash.
+    committed_data_activation: felt,
 }
 
 // Calculates the hash of StarkNet OS config. The public keys hash is not included if there are no
@@ -37,7 +39,7 @@ func get_starknet_os_config_hash{hash_ptr: HashBuiltin*}(starknet_os_config: Sta
     let (hash_state_ptr) = hash_update_single(
         hash_state_ptr=hash_state_ptr, item=starknet_os_config.fee_token_address
     );
-    static_assert StarknetOsConfig.SIZE == 3;
+    static_assert StarknetOsConfig.SIZE == 4;
     // If in the future another optional field is added to StarknetOsConfig,
     // remove the following `if`.
     if (starknet_os_config.public_keys_hash != DEFAULT_PUBLIC_KEYS_HASH) {
@@ -46,6 +48,16 @@ func get_starknet_os_config_hash{hash_ptr: HashBuiltin*}(starknet_os_config: Sta
         );
     } else {
         // align the stack.
+        tempvar hash_ptr = hash_ptr;
+        tempvar hash_state_ptr = hash_state_ptr;
+    }
+    // Preserve the upstream config hash when disabled. A versioned suffix prevents ambiguity.
+    if (starknet_os_config.committed_data_activation != 0) {
+        let (hash_state_ptr) = hash_update_single(hash_state_ptr=hash_state_ptr, item='COMMITTED_DATA_V1');
+        let (hash_state_ptr) = hash_update_single(
+            hash_state_ptr=hash_state_ptr, item=starknet_os_config.committed_data_activation
+        );
+    } else {
         tempvar hash_ptr = hash_ptr;
         tempvar hash_state_ptr = hash_state_ptr;
     }

@@ -180,18 +180,29 @@ impl<S: StateReader> SyscallExecutor for SnosHintProcessor<'_, S> {
         if request.function_selector == selector_from_name(EXECUTE_ENTRY_POINT_NAME) {
             return Err(handle_failure(INVALID_ARGUMENT_FELT));
         }
+        let block_number = syscall_handler
+            .get_current_execution_helper()?
+            .os_block_input
+            .block_info
+            .block_number
+            .0;
+        let committed_data_active = syscall_handler
+            .os_hints_config
+            .committed_data_activation_block
+            .is_some_and(|height| block_number >= height);
         if *request.contract_address.0.key()
-            == blockifier::execution::syscalls::oracle::ORACLE_ADDRESS
+            == blockifier::execution::syscalls::committed_data::COMMITTED_DATA_ADDRESS
+            && committed_data_active
         {
             let invalid = |info: &str| SyscallExecutorBaseError::InvalidSyscallInput {
                 input: request.function_selector.0,
                 info: info.into(),
             };
-            if request.function_selector != selector_from_name("get_price")
-                || request.calldata.0.len() != 2
-            {
-                return Err(invalid("oracle expects get_price(root, asset_id)").into());
-            }
+            blockifier::execution::syscalls::committed_data::validate_read_request(
+                request.function_selector.0,
+                &request.calldata.0,
+                *remaining_gas,
+            )?;
             let publisher = *syscall_handler
                 .get_mut_current_execution_helper()?
                 .tx_execution_iter
@@ -203,23 +214,18 @@ impl<S: StateReader> SyscallExecutor for SnosHintProcessor<'_, S> {
                 .0
                 .key();
             let witness = syscall_handler
-                .os_hints_config
-                .oracle_witnesses
-                .iter()
-                .find(|w| {
-                    w.root == request.calldata.0[0]
-                        && w.publisher == publisher
-                        && Felt::from(w.asset) == request.calldata.0[1]
-                })
-                .ok_or_else(|| invalid("oracle witness unavailable"))?;
+                .committed_data_witness(request.calldata.0[0], publisher, request.calldata.0[1])
+                .ok_or_else(|| invalid("committed_data witness unavailable"))?;
             *remaining_gas = remaining_gas
-                .checked_sub(blockifier::execution::syscalls::oracle::ORACLE_READ_GAS)
-                .ok_or_else(|| invalid("insufficient oracle gas"))?;
+                .checked_sub(
+                    blockifier::execution::syscalls::committed_data::COMMITTED_DATA_READ_GAS,
+                )
+                .ok_or_else(|| invalid("insufficient committed_data gas"))?;
             // No synthetic ordinary inner call: the proved OS has a matching dedicated branch.
-            // The oracle branch constrains this response in place; ordinary calls instead
+            // The committed_data branch constrains this response in place; ordinary calls instead
             // relocate their temporary response to the inner Cairo execution's return segment.
             let start_ptr = vm.add_memory_segment();
-            vm.load_data(start_ptr, &[MaybeRelocatable::from(Felt::from(witness.price))])?;
+            vm.load_data(start_ptr, &[MaybeRelocatable::from(Felt::from(witness.value))])?;
             let segment = ReadOnlySegment { start_ptr, length: 1 };
             return Ok(CallContractResponse { segment });
         }

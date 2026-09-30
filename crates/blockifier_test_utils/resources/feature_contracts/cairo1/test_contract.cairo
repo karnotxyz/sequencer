@@ -75,16 +75,16 @@ mod TestContract {
     }
 
     // POC adapter: the root comes from normal authenticated storage, not caller calldata.
-    // This is a test fixture. Production root publication needs its existing oracle authorization.
+    // This is a test fixture. Production root publication needs its existing committed_data authorization.
     #[external(v0)]
-    fn test_oracle_read(self: @ContractState, asset: felt252, expected_price: felt252) {
+    fn test_committed_data_read(self: @ContractState, asset: felt252, expected_price: felt252) {
         let root = syscalls::storage_read_syscall(0, 45.try_into().unwrap()).unwrap_syscall();
         let price = syscalls::call_contract_syscall(
-            selector!("paradox_oracle_tick").try_into().unwrap(),
-            selector!("get_price"), array![root, asset].span(),
+            selector!("committed_data_v1").try_into().unwrap(),
+            selector!("get_value"), array![root, asset].span(),
         ).unwrap_syscall();
-        assert(price.len() == 1, 'oracle response length');
-        assert(*price.at(0) == expected_price, 'oracle price mismatch');
+        assert(price.len() == 1, 'committed_data response length');
+        assert(*price.at(0) == expected_price, 'committed_data price mismatch');
         syscalls::storage_write_syscall(0, 46.try_into().unwrap(), *price.at(0)).unwrap_syscall();
     }
 

@@ -37,6 +37,7 @@ use crate::hints::hint_implementation::cairo1_revert::implementation::{
     read_storage_key_for_revert,
     write_storage_key_for_revert,
 };
+use crate::hints::hint_implementation::committed_data::load_committed_data_witness;
 use crate::hints::hint_implementation::compiled_class::implementation::{
     assert_end_of_bytecode_segments,
     assign_bytecode_segments,
@@ -115,7 +116,6 @@ use crate::hints::hint_implementation::kzg::implementation::{
     write_split_result,
 };
 use crate::hints::hint_implementation::math::log2_ceil;
-use crate::hints::hint_implementation::oracle::load_oracle_witness;
 use crate::hints::hint_implementation::os::{
     check_block_hash_consistency,
     configure_kzg_manager,
@@ -469,7 +469,7 @@ define_hint_enum!(
     SnosHintProcessor<'_, S>,
     S,
     StateReader,
-    (LoadOracleWitness, load_oracle_witness),
+    (LoadCommittedDataWitness, load_committed_data_witness),
     (LoadClass, load_class),
     (RelocateSha256Segment, relocate_sha256_segment),
     (EnterScopeWithBytecodeSegmentStructure, enter_scope_with_bytecode_segment_structure),

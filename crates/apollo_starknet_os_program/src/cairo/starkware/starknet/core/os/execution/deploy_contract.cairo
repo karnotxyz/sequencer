@@ -19,7 +19,7 @@ from starkware.starknet.core.os.execution.revert import (
 from starkware.starknet.core.os.output import OsCarriedOutputs
 from starkware.starknet.core.os.state.commitment import UNINITIALIZED_CLASS_HASH, StateEntry
 
-from starkware.starknet.core.os.execution.oracle import ORACLE_CONTRACT_ADDRESS
+from starkware.starknet.core.os.execution.committed_data import (COMMITTED_DATA_CONTRACT_ADDRESS, committed_data_is_active)
 
 // Deploys a contract and invokes its constructor.
 // Returns the constructor's return data.
@@ -47,10 +47,13 @@ func deploy_contract{
     assert_not_zero(
         (contract_address - ORIGIN_ADDRESS) * (contract_address - BLOCK_HASH_CONTRACT_ADDRESS) * (
             contract_address - ALIAS_CONTRACT_ADDRESS
-        ) * (contract_address - RESERVED_CONTRACT_ADDRESS) * (
-            contract_address - ORACLE_CONTRACT_ADDRESS
-        ),
+        ) * (contract_address - RESERVED_CONTRACT_ADDRESS),
     );
+
+    let (active) = committed_data_is_active(block_context);
+    if (active != 0) {
+        assert_not_zero(contract_address - COMMITTED_DATA_CONTRACT_ADDRESS);
+    }
 
     local state_entry: StateEntry*;
     %{ GetContractAddressStateEntry %}

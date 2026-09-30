@@ -74,9 +74,19 @@ pub struct OsHintsConfig {
     pub chain_info: OsChainInfo,
     pub public_keys: Option<Vec<Felt>>,
     pub rng_seed_salt: Option<Felt>,
-    /// Untrusted private witnesses. Cairo, not this input, establishes membership.
+    /// Inclusive activation height, committed in the OS configuration hash. None disables it.
     #[cfg_attr(feature = "deserialize", serde(default))]
-    pub oracle_witnesses: Vec<blockifier::execution::syscalls::oracle::OracleWitness>,
+    pub committed_data_activation_block: Option<u64>,
+    /// Untrusted private witnesses. Cairo, not this input, establishes membership.
+    #[cfg_attr(
+        feature = "deserialize",
+        serde(
+            default,
+            deserialize_with = "blockifier::execution::syscalls::committed_data::deserialize_witnesses"
+        )
+    )]
+    pub committed_data_witnesses:
+        Vec<blockifier::execution::syscalls::committed_data::CommittedDataWitness>,
 }
 impl OsHintsConfig {
     pub fn log_level(&self) -> LevelFilter {
@@ -86,6 +96,8 @@ impl OsHintsConfig {
 
 #[derive(Debug, thiserror::Error)]
 pub enum OsInputError {
+    #[error("Invalid committed-data input: {0}")]
+    CommittedData(String),
     #[error("Invalid length of state readers: {0}. Should match size of block inputs: {1}")]
     InvalidLengthOfStateReaders(usize, usize),
 }

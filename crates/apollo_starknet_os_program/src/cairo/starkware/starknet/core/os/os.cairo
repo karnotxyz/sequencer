@@ -295,9 +295,11 @@ func get_os_global_context{
     );
     local chain_id;
     local fee_token_address;
+    local committed_data_activation;
     %{ ChainIdAndFeeTokenAddress %}
     tempvar starknet_os_config = new StarknetOsConfig(
-        chain_id=chain_id, fee_token_address=fee_token_address, public_keys_hash=public_keys_hash
+        chain_id=chain_id, fee_token_address=fee_token_address, public_keys_hash=public_keys_hash,
+        committed_data_activation=committed_data_activation
     );
     let (starknet_os_config_hash) = get_starknet_os_config_hash{hash_ptr=pedersen_ptr}(
         starknet_os_config=starknet_os_config
@@ -309,6 +311,7 @@ func get_os_global_context{
             chain_id=chain_id,
             fee_token_address=fee_token_address,
             public_keys_hash=DEFAULT_PUBLIC_KEYS_HASH,
+            committed_data_activation=committed_data_activation,
         );
         let (hash_without_keys) = get_starknet_os_config_hash{hash_ptr=pedersen_ptr}(
             starknet_os_config=starknet_os_config_without_public_keys

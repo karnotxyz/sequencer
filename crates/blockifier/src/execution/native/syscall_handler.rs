@@ -507,9 +507,12 @@ impl StarknetSyscallHandler for &mut NativeSyscallHandler<'_> {
             .maybe_block_direct_execute_call(selector)
             .map_err(|e| self.handle_error(remaining_gas, e))?;
 
-        if address == crate::execution::syscalls::oracle::ORACLE_ADDRESS {
-            let price = crate::execution::syscalls::oracle::read_price(
-                &self.base.context.tx_context.block_context.oracle_witnesses,
+        if address == crate::execution::syscalls::committed_data::COMMITTED_DATA_ADDRESS
+            && self.base.context.tx_context.block_context.committed_data_is_active()
+        {
+            self.base.account_committed_data_read();
+            let value = crate::execution::syscalls::committed_data::read_value(
+                &self.base.context.tx_context.block_context.committed_data_witnesses,
                 *self.base.call.storage_address.0.key(),
                 entry_point_selector,
                 calldata,
@@ -517,11 +520,11 @@ impl StarknetSyscallHandler for &mut NativeSyscallHandler<'_> {
             )
             .map_err(|e| self.handle_error(remaining_gas, e.into()))?;
             log::debug!(
-                target: "oracle_native",
-                "Native oracle system call completed: publisher={}",
+                target: "committed_data_native",
+                "Native committed_data system call completed: publisher={}",
                 self.base.call.storage_address
             );
-            return Ok(vec![price]);
+            return Ok(vec![value]);
         }
 
         let class_hash = self

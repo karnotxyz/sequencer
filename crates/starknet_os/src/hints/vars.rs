@@ -124,11 +124,12 @@ impl From<Scope> for String {
 define_string_enum! {
     #[derive(Copy, Debug, Clone)]
     pub enum Ids {
-        (OracleRoot),
-        (OraclePublisher),
-        (OracleAsset),
-        (OraclePrice),
-        (OracleSiblings),
+        (CommittedDataActivation),
+        (CommittedDataRoot),
+        (CommittedDataPublisher),
+        (CommittedDataIndex),
+        (CommittedDataValue),
+        (CommittedDataSiblings),
         (AccountDeploymentData),
         (AccountDeploymentDataSize),
         (ActualOutState),

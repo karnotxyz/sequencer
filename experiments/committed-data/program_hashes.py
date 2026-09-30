@@ -26,7 +26,7 @@ def main():
     source = package / 'src/cairo'
     compiler = Path(sys.executable).parent / 'cairo-compile'
     results = {}
-    with tempfile.TemporaryDirectory(prefix='oracle-os-hashes-') as tmp:
+    with tempfile.TemporaryDirectory(prefix='committed_data-os-hashes-') as tmp:
         virtual = Path(tmp) / 'virtual'
         shutil.copytree(source, virtual)
         for path in virtual.rglob('*__virtual.cairo'):

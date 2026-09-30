@@ -22,7 +22,7 @@ use crate::retdata;
 use crate::state::state_api::StateReader;
 use crate::test_utils::initial_test_state::test_state;
 use crate::test_utils::syscall::build_recurse_calldata;
-use crate::test_utils::{trivial_external_entry_point_new, CompilerBasedVersion, BALANCE};
+use crate::test_utils::{BALANCE, CompilerBasedVersion, trivial_external_entry_point_new};
 
 #[cfg_attr(feature = "cairo_native", test_case(RunnableCairo1::Native; "Native"))]
 #[test_case(RunnableCairo1::Casm;"VM")]
@@ -571,4 +571,48 @@ fn test_nested_call_storage_revert(runnable_version: RunnableCairo1) {
         messages.is_empty(),
         "All L1 messages should be reverted across the call hierarchy; got {messages:?}."
     );
+}
+
+#[cfg_attr(feature = "cairo_native", test_case(RunnableCairo1::Native; "native"))]
+#[test_case(RunnableCairo1::Casm; "vm")]
+fn committed_data_reads_match_activation_and_execution_engine(runnable: RunnableCairo1) {
+    use starknet_types_core::felt::Felt;
+
+    use crate::execution::syscalls::committed_data::{CommittedDataSet, CommittedDataWitnesses};
+    use crate::state::state_api::State;
+
+    let contract = FeatureContract::TestContract(CairoVersion::Cairo1(runnable));
+    let address = contract.get_instance_address(0);
+    let tree = CommittedDataSet::new(**address, vec![Felt::MAX]).unwrap();
+    for activation in [None, Some(0), Some(u64::MAX)] {
+        let mut state = test_state(&ChainInfo::create_for_testing(), BALANCE, &[(contract, 1)]);
+        state.set_storage_at(address, StorageKey::from(45_u32), tree.root()).unwrap();
+        let mut context = BlockContext::create_for_testing();
+        context.committed_data_activation_block = activation;
+        context.committed_data_witnesses =
+            Arc::new(CommittedDataWitnesses::new(vec![tree.witness(0).unwrap()]).unwrap());
+        let call = CallEntryPoint {
+            entry_point_selector: selector_from_name("test_committed_data_read"),
+            calldata: calldata_macro![Felt::ZERO, Felt::MAX],
+            ..trivial_external_entry_point_new(contract)
+        };
+        let result = call.execute_directly_given_block_context(&mut state, context);
+        if activation == Some(0) {
+            let info = result.unwrap();
+            assert!(!info.execution.failed);
+            info.check_native_execution(runnable.is_cairo_native());
+            assert!(
+                info.execution.gas_consumed
+                    >= crate::execution::syscalls::committed_data::COMMITTED_DATA_READ_GAS
+            );
+            if !runnable.is_cairo_native() {
+                assert!(
+                    info.resources.vm_resources.n_steps
+                        >= crate::execution::syscalls::committed_data::read_os_resources().n_steps
+                );
+            }
+        } else {
+            assert!(result.is_err() || result.unwrap().execution.failed);
+        }
+    }
 }

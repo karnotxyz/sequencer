@@ -1,6 +1,6 @@
+pub mod committed_data;
 pub mod common_syscall_logic;
 pub mod hint_processor;
-pub mod oracle;
 pub mod secp;
 pub mod syscall_base;
 pub mod syscall_executor;

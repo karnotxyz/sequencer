@@ -1,10 +1,10 @@
 use std::any::Any;
 use std::collections::btree_map::IntoIter;
-use std::collections::{BTreeMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 
 use blockifier::execution::call_info::CallExecution;
 use blockifier::execution::syscalls::secp::SecpHintProcessor;
-use blockifier::execution::syscalls::vm_syscall_utils::{execute_next_syscall, SyscallUsageMap};
+use blockifier::execution::syscalls::vm_syscall_utils::{SyscallUsageMap, execute_next_syscall};
 use blockifier::state::state_api::StateReader;
 #[cfg(any(feature = "testing", test))]
 use blockifier::test_utils::dict_state_reader::DictStateReader;
@@ -122,6 +122,7 @@ pub struct SnosHintProcessor<'a, S: StateReader> {
     pub(crate) program: &'a Program,
     pub(crate) execution_helpers_manager: ExecutionHelpersManager<'a, S>,
     pub(crate) os_hints_config: OsHintsConfig,
+    committed_data_index: HashMap<(Felt, Felt, Felt), usize>,
     pub(crate) deprecated_compiled_classes_iter: IntoIter<ClassHash, ContractClass>,
     pub(crate) deprecated_class_hashes: HashSet<ClassHash>,
     pub(crate) compiled_classes: BTreeMap<CompiledClassHash, CasmContractClass>,
@@ -158,6 +159,19 @@ impl<'a, S: StateReader> SnosHintProcessor<'a, S> {
             )
             .into());
         }
+        let witnesses = &os_hints_config.committed_data_witnesses;
+        if witnesses.len()
+            > blockifier::execution::syscalls::committed_data::MAX_COMMITTED_DATA_WITNESSES
+        {
+            return Err(OsInputError::CommittedData("Too many witnesses".into()).into());
+        }
+        let mut committed_data_index = HashMap::with_capacity(witnesses.len());
+        for (offset, witness) in witnesses.iter().enumerate() {
+            let key = (witness.root, witness.publisher, Felt::from(witness.index));
+            if committed_data_index.insert(key, offset).is_some() {
+                return Err(OsInputError::CommittedData("Duplicate witness".into()).into());
+            }
+        }
         let rng_seed = Self::rng_seed(&os_block_inputs, &os_hints_config.rng_seed_salt);
         let execution_helpers = os_block_inputs
             .into_iter()
@@ -175,6 +189,7 @@ impl<'a, S: StateReader> SnosHintProcessor<'a, S> {
             program: os_program,
             execution_helpers_manager: ExecutionHelpersManager::new(execution_helpers),
             os_hints_config,
+            committed_data_index,
             da_segment: None,
             builtin_hint_processor: BuiltinHintProcessor::new_empty(),
             deprecated_class_hashes: deprecated_compiled_classes.keys().copied().collect(),
@@ -187,6 +202,17 @@ impl<'a, S: StateReader> SnosHintProcessor<'a, S> {
             #[cfg(any(test, feature = "testing"))]
             unused_hints: AllHints::all_iter().collect(),
         })
+    }
+
+    pub(crate) fn committed_data_witness(
+        &self,
+        root: Felt,
+        publisher: Felt,
+        index: Felt,
+    ) -> Option<&blockifier::execution::syscalls::committed_data::CommittedDataWitness> {
+        self.committed_data_index
+            .get(&(root, publisher, index))
+            .and_then(|offset| self.os_hints_config.committed_data_witnesses.get(*offset))
     }
 
     /// Hashes the block hashes of the given block inputs to get a seed for the random number

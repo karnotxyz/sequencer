@@ -5,17 +5,17 @@ use starknet_types_core::felt::Felt;
 use starknet_types_core::hash::{Pedersen, StarkHash as CoreStarkHash};
 
 use crate::core::{
-    ascii_as_felt,
-    calculate_contract_address,
-    felt_to_u128,
+    CONTRACT_ADDRESS_PREFIX,
     ChainId,
     ContractAddress,
     EthAddress,
+    L2_ADDRESS_UPPER_BOUND,
     Nonce,
     PatriciaKey,
     StarknetApiError,
-    CONTRACT_ADDRESS_PREFIX,
-    L2_ADDRESS_UPPER_BOUND,
+    ascii_as_felt,
+    calculate_contract_address,
+    felt_to_u128,
 };
 use crate::hash::StarkHash;
 use crate::transaction::fields::{Calldata, ContractAddressSalt};
@@ -134,5 +134,20 @@ fn test_value_too_large_for_type() {
         format!("{error}"),
         "Out of range Felt 340282366920938463463374607431768211456 is too big to convert to \
          'u128'."
+    );
+}
+
+#[test]
+fn committed_data_configuration_is_versioned_and_activation_bound() {
+    let chain = super::OsChainInfo::default();
+    let disabled = chain.compute_os_config_hash(None).unwrap();
+    assert_eq!(disabled, chain.compute_os_config_hash_with_committed_data(None, None).unwrap());
+    let genesis = chain.compute_os_config_hash_with_committed_data(None, Some(0)).unwrap();
+    let future = chain.compute_os_config_hash_with_committed_data(None, Some(42)).unwrap();
+    assert_ne!(disabled, genesis);
+    assert_ne!(genesis, future);
+    assert_ne!(
+        future,
+        chain.compute_os_config_hash_with_committed_data(None, Some(u64::MAX)).unwrap()
     );
 }
