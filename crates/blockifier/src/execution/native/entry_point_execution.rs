@@ -3,12 +3,12 @@ use cairo_native::utils::BuiltinCosts;
 use cairo_vm::types::builtin_name::BuiltinName;
 
 use crate::execution::call_info::{
-    cairo_primitive_counter_map,
     CairoPrimitiveCounterMap,
     CallExecution,
     CallInfo,
     OpcodeName,
     Retdata,
+    cairo_primitive_counter_map,
 };
 use crate::execution::contract_class::TrackedResource;
 use crate::execution::entry_point::{
@@ -99,10 +99,10 @@ fn create_callinfo(
 
     // Combine syscall builtins (no opcodes) with entry-point cairo primitives (builtins + opcodes).
     let version_constants = syscall_handler.base.context.versioned_constants();
-    let syscall_builtins = version_constants
-        .get_additional_os_syscall_resources(&syscall_handler.base.syscalls_usage)
-        .filter_unused_builtins()
-        .prover_builtins();
+    let mut syscall_resources =
+        version_constants.get_additional_os_syscall_resources(&syscall_handler.base.syscalls_usage);
+    syscall_resources += &syscall_handler.base.committed_data_resources;
+    let syscall_builtins = syscall_resources.filter_unused_builtins().prover_builtins();
     let mut entry_point_primitive_counters =
         builtin_stats_to_primitive_counters(call_result.builtin_stats);
     add_maps(&mut entry_point_primitive_counters, &cairo_primitive_counter_map(syscall_builtins));

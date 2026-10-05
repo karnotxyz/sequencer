@@ -7,24 +7,24 @@ use blockifier::context::{BlockContext, ChainInfo, FeeTokenAddresses};
 use blockifier::state::cached_state::{CachedState, StateMaps};
 use blockifier::state::state_api::{StateReader, UpdatableState};
 use blockifier::state::stateful_compression_test_utils::decompress;
-use blockifier::test_utils::dict_state_reader::DictStateReader;
 use blockifier::test_utils::ALIAS_CONTRACT_ADDRESS;
+use blockifier::test_utils::dict_state_reader::DictStateReader;
 use blockifier::transaction::objects::TransactionExecutionInfo;
 use blockifier::transaction::transaction_execution::Transaction as BlockifierTransaction;
 use blockifier_test_utils::calldata::create_calldata;
 use blockifier_test_utils::contracts::FeatureContract;
 use cairo_vm::types::builtin_name::BuiltinName;
-use expect_test::{expect, Expect};
+use expect_test::{Expect, expect};
 use itertools::Itertools;
 use starknet_api::abi::abi_utils::{get_fee_token_var_address, selector_from_name};
 use starknet_api::block::{BlockHash, BlockInfo, BlockNumber, PreviousBlockNumber};
 use starknet_api::block_hash::block_hash_calculator::{
-    calculate_block_hash,
     BlockHeaderCommitments,
     PartialBlockHashComponents,
+    calculate_block_hash,
 };
-use starknet_api::contract_class::compiled_class_hash::{HashVersion, HashableCompiledClass};
 use starknet_api::contract_class::ContractClass;
+use starknet_api::contract_class::compiled_class_hash::{HashVersion, HashableCompiledClass};
 use starknet_api::core::{
     ChainId,
     ClassHash,
@@ -46,8 +46,8 @@ use starknet_api::executable_transaction::{
 use starknet_api::hash::StateRoots;
 use starknet_api::invoke_tx_args;
 use starknet_api::state::{SierraContractClass, StorageKey};
-use starknet_api::test_utils::invoke::{invoke_tx, InvokeTxArgs};
-use starknet_api::test_utils::{NonceManager, CHAIN_ID_FOR_TESTS, TEST_SEQUENCER_ADDRESS};
+use starknet_api::test_utils::invoke::{InvokeTxArgs, invoke_tx};
+use starknet_api::test_utils::{CHAIN_ID_FOR_TESTS, NonceManager, TEST_SEQUENCER_ADDRESS};
 use starknet_api::transaction::constants::TRANSFER_EVENT_NAME;
 use starknet_api::transaction::fields::{Calldata, Fee, Tip};
 use starknet_api::transaction::{Event, L1HandlerTransaction, L1ToL2Payload, MessageToL1};
@@ -70,7 +70,7 @@ use starknet_os::io::os_output_types::{
     TryFromOutputIter,
 };
 use starknet_os::io::test_utils::validate_kzg_segment;
-use starknet_os::runner::{run_os_stateless, DEFAULT_OS_LAYOUT};
+use starknet_os::runner::{DEFAULT_OS_LAYOUT, run_os_stateless};
 use starknet_os::test_utils::coverage::expect_hint_coverage;
 use starknet_transaction_prover::running::committer_utils::{
     commit_state_diff,
@@ -79,20 +79,20 @@ use starknet_transaction_prover::running::committer_utils::{
 use starknet_types_core::felt::Felt;
 
 use crate::initial_state::{
-    create_default_initial_state_data,
-    get_initial_deploy_account_tx,
     FlowTestState,
     InitialState,
     InitialStateData,
     OsExecutionContracts,
+    create_default_initial_state_data,
+    get_initial_deploy_account_tx,
 };
 use crate::tests::NON_TRIVIAL_RESOURCE_BOUNDS;
 use crate::utils::{
+    ExecutionOutput,
     divide_vec_into_n_parts,
     execute_transactions,
     get_extended_initial_reads,
     maybe_dummy_block_hash_and_number,
-    ExecutionOutput,
 };
 
 /// The STRK fee token address that was deployed when initializing the default initial state.
@@ -460,6 +460,8 @@ impl<S: FlowTestState> TestBuilder<S> {
         let chain_info =
             OsChainInfo::from(initial_state_data.initial_state.block_context.chain_info());
         let os_hints_config = OsHintsConfig {
+            use_committed_data: false,
+            committed_data_witnesses: Vec::new(),
             chain_info,
             use_kzg_da: config.use_kzg_da,
             full_output: config.full_output,
@@ -524,7 +526,7 @@ impl<S: FlowTestState> TestBuilder<S> {
     /// chain info.
     pub(crate) fn compute_virtual_os_config_hash(&self) -> Felt {
         let chain_info = self.initial_state.block_context.chain_info();
-        OsChainInfo::from(chain_info).compute_virtual_os_config_hash().unwrap()
+        OsChainInfo::from(chain_info).compute_os_config_hash(None).unwrap()
     }
 
     /// Advances the manager to the next block when adding new transactions.

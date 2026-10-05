@@ -25,7 +25,7 @@ use starknet_os::commitment_infos::CommitmentInfo;
 use starknet_os::io::os_input::{OsBlockInput, OsHints, OsHintsConfig, StarknetOsInput};
 use starknet_os::runner::run_virtual_os;
 use tracing::field::display;
-use tracing::{info, Span};
+use tracing::{Span, info};
 use url::Url;
 
 use crate::errors::RunnerError;
@@ -99,6 +99,8 @@ impl From<VirtualOsBlockInput> for OsHints {
         OsHints {
             os_input,
             os_hints_config: OsHintsConfig {
+                use_committed_data: false,
+                committed_data_witnesses: Vec::new(),
                 debug_mode: false,
                 full_output: false,
                 use_kzg_da: false,

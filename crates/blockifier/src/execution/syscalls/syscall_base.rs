@@ -1,5 +1,5 @@
 /// This file is for sharing common logic between Native and VM syscall implementations.
-use std::collections::{hash_map, HashMap};
+use std::collections::{HashMap, hash_map};
 use std::convert::From;
 use std::sync::Arc;
 
@@ -7,23 +7,23 @@ use starknet_api::abi::abi_utils::selector_from_name;
 use starknet_api::block::{BlockHash, BlockNumber};
 use starknet_api::contract_class::EntryPointType;
 use starknet_api::core::{
-    calculate_contract_address,
     ClassHash,
     ContractAddress,
     EntryPointSelector,
     EthAddress,
     Nonce,
+    calculate_contract_address,
 };
 use starknet_api::state::StorageKey;
 use starknet_api::transaction::constants::EXECUTE_ENTRY_POINT_NAME;
 use starknet_api::transaction::fields::{Calldata, ContractAddressSalt, Fee, TransactionSignature};
 use starknet_api::transaction::{
-    signed_tx_version,
     EventContent,
     InvokeTransactionV0,
     TransactionHasher,
     TransactionOptions,
     TransactionVersion,
+    signed_tx_version,
 };
 use starknet_types_core::felt::Felt;
 
@@ -46,18 +46,18 @@ use crate::execution::entry_point::{
 };
 use crate::execution::execution_utils::execute_deployment;
 use crate::execution::syscalls::hint_processor::{
-    SyscallExecutionError,
     BLOCK_NUMBER_OUT_OF_RANGE_ERROR_FELT,
     ENTRYPOINT_FAILED_ERROR_FELT,
     INVALID_ARGUMENT_FELT,
+    SyscallExecutionError,
 };
 use crate::execution::syscalls::vm_syscall_utils::{
-    exceeds_event_size_limit,
     SyscallBaseResult,
     SyscallExecutorBaseError,
     SyscallSelector,
     SyscallUsageMap,
     TryExtractRevert,
+    exceeds_event_size_limit,
 };
 use crate::state::state_api::State;
 use crate::transaction::account_transaction::is_cairo1;
@@ -89,11 +89,23 @@ pub struct SyscallHandlerBase<'state> {
     pub original_values: HashMap<StorageKey, Felt>,
 
     pub syscalls_usage: SyscallUsageMap,
+    /// OS work for the versioned extension, including calls later reverted by their parent.
+    pub committed_data_resources: cairo_vm::vm::runners::cairo_runner::ExecutionResources,
 
     revert_info_idx: usize,
 }
 
 impl<'state> SyscallHandlerBase<'state> {
+    pub fn account_committed_data_read(&mut self) {
+        let resources = super::committed_data::read_os_resources();
+        if self.context.tracked_resource_stack.last()
+            == Some(&crate::execution::contract_class::TrackedResource::CairoSteps)
+        {
+            self.context.subtract_steps(resources.n_steps);
+        }
+        self.committed_data_resources += resources;
+    }
+
     pub fn new(
         call: ExecutableCallEntryPoint,
         state: &'state mut dyn State,
@@ -118,6 +130,7 @@ impl<'state> SyscallHandlerBase<'state> {
             storage_access_tracker: StorageAccessTracker::default(),
             original_values,
             syscalls_usage: SyscallUsageMap::new(),
+            committed_data_resources: Default::default(),
             revert_info_idx,
         }
     }

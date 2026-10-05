@@ -5,6 +5,7 @@ pub(crate) mod block_hash;
 pub(crate) mod bls_field;
 pub(crate) mod builtins;
 pub(crate) mod cairo1_revert;
+pub(crate) mod committed_data;
 pub(crate) mod compiled_class;
 pub mod deprecated_compiled_class;
 pub(crate) mod execute_syscalls;
