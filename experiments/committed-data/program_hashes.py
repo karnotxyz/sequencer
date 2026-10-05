@@ -48,7 +48,8 @@ def main():
         int.from_bytes(b'AGGREGATOR', 'big'), int(results['aggregator'], 16)))
     target = package / 'src/program_hash.json'
     if args.write:
-        target.write_text(json.dumps(results, indent=2) + '\n')
+        # Match the Rust serde_json snapshot used by test_program_hashes.
+        target.write_text(json.dumps(results, indent=2))
     else:
         assert results == json.loads(target.read_text()), 'Compiled program hashes differ'
 

@@ -198,8 +198,7 @@ impl BlockContext {
             chain_info: ChainInfo::create_for_testing(),
             versioned_constants: VersionedConstants::create_for_testing(),
             bouncer_config: BouncerConfig::max(),
-            committed_data_activation_block: None,
-            committed_data_readers: Default::default(),
+            use_committed_data: false,
             committed_data_witnesses: Default::default(),
         }
     }
@@ -210,8 +209,7 @@ impl BlockContext {
             chain_info: ChainInfo::create_for_testing(),
             versioned_constants: VersionedConstants::create_for_account_testing(),
             bouncer_config: BouncerConfig::max(),
-            committed_data_activation_block: None,
-            committed_data_readers: Default::default(),
+            use_committed_data: false,
             committed_data_witnesses: Default::default(),
         }
     }

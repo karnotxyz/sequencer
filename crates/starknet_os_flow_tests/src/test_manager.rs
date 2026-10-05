@@ -195,14 +195,8 @@ impl OsTestExpectedValues {
 
         // Config hash and flags.
         let config = &os_hints.os_hints_config;
-        let config_hash = config
-            .chain_info
-            .compute_os_config_hash_with_committed_data(
-                config.public_keys.as_ref(),
-                config.committed_data_activation_block,
-                &config.committed_data_readers,
-            )
-            .unwrap();
+        let config_hash =
+            config.chain_info.compute_os_config_hash(config.public_keys.as_ref()).unwrap();
         Self {
             previous_global_root,
             new_global_root,
@@ -466,8 +460,7 @@ impl<S: FlowTestState> TestBuilder<S> {
         let chain_info =
             OsChainInfo::from(initial_state_data.initial_state.block_context.chain_info());
         let os_hints_config = OsHintsConfig {
-            committed_data_activation_block: None,
-            committed_data_readers: Default::default(),
+            use_committed_data: false,
             committed_data_witnesses: Vec::new(),
             chain_info,
             use_kzg_da: config.use_kzg_da,
@@ -533,13 +526,7 @@ impl<S: FlowTestState> TestBuilder<S> {
     /// chain info.
     pub(crate) fn compute_virtual_os_config_hash(&self) -> Felt {
         let chain_info = self.initial_state.block_context.chain_info();
-        OsChainInfo::from(chain_info)
-            .compute_os_config_hash_with_committed_data(
-                None,
-                self.initial_state.block_context.committed_data_activation_block,
-                &self.initial_state.block_context.committed_data_readers,
-            )
-            .unwrap()
+        OsChainInfo::from(chain_info).compute_os_config_hash(None).unwrap()
     }
 
     /// Advances the manager to the next block when adding new transactions.

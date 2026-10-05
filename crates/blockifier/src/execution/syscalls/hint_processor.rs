@@ -533,14 +533,11 @@ impl SyscallExecutor for SyscallHintProcessor<'_> {
         }
         syscall_handler.base.maybe_block_direct_execute_call(selector)?;
 
-        if *storage_address.0.key() == super::committed_data::COMMITTED_DATA_ADDRESS
-            && syscall_handler.base.context.tx_context.block_context.committed_data_is_active()
-        {
+        if *storage_address.0.key() == super::committed_data::COMMITTED_DATA_ADDRESS {
             syscall_handler.base.account_committed_data_read();
             let value = super::committed_data::read_value(
-                &syscall_handler.base.context.tx_context.block_context.committed_data_readers,
+                syscall_handler.base.context.tx_context.block_context.use_committed_data,
                 &syscall_handler.base.context.tx_context.block_context.committed_data_witnesses,
-                *syscall_handler.storage_address().0.key(),
                 selector.0,
                 &request.calldata.0,
                 remaining_gas,

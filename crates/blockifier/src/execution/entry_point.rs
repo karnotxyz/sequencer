@@ -306,7 +306,7 @@ impl SierraGasRevertTracker {
 
 #[derive(Debug)]
 pub struct EntryPointExecutionContext {
-    /// Sticky host availability failure; it must never become an accepted transaction revert.
+    /// Sticky permission/availability failure; it must never become an accepted transaction revert.
     pub committed_data_failure:
         Option<crate::execution::syscalls::committed_data::CommittedDataError>,
     // We use `Arc` to avoid the clone of this potentially large object, as inner calls

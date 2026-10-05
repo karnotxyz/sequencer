@@ -333,11 +333,7 @@ impl AccountTransaction {
         let chain_info = &block_context.chain_info;
         // TODO(Meshi): Cache this computation as part of the chain context.
         let virtual_os_config_hash = OsChainInfo::from(chain_info)
-            .compute_os_config_hash_with_committed_data(
-                None,
-                block_context.committed_data_activation_block,
-                &block_context.committed_data_readers,
-            )
+            .compute_os_config_hash(None)
             .expect("Failed to compute OS config hash");
         let proof_config_hash = snos_proof_facts.config_hash;
         if virtual_os_config_hash != proof_config_hash {
@@ -665,7 +661,11 @@ impl AccountTransaction {
                         .limit_usage(tx_context.sierra_gas_limit(&ExecutionMode::Validate)),
                 )),
             );
-            execute_call_info = self.run_execute(state, &mut execution_context, remaining_gas)?;
+            let execution_result = self.run_execute(state, &mut execution_context, remaining_gas);
+            if let Some(error) = execution_context.committed_data_failure.take() {
+                return Err(TransactionExecutionError::CommittedDataAvailability(error));
+            }
+            execute_call_info = execution_result?;
             validate_call_info = self.validate_tx(state, tx_context.clone(), remaining_gas)?;
         } else {
             validate_call_info = self.validate_tx(state, tx_context.clone(), remaining_gas)?;
@@ -679,7 +679,11 @@ impl AccountTransaction {
                     remaining_gas.limit_usage(tx_context.sierra_gas_limit(&ExecutionMode::Execute)),
                 )),
             );
-            execute_call_info = self.run_execute(state, &mut execution_context, remaining_gas)?;
+            let execution_result = self.run_execute(state, &mut execution_context, remaining_gas);
+            if let Some(error) = execution_context.committed_data_failure.take() {
+                return Err(TransactionExecutionError::CommittedDataAvailability(error));
+            }
+            execute_call_info = execution_result?;
         }
 
         let tx_receipt = TransactionReceipt::from_account_tx(

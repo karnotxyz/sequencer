@@ -6,20 +6,12 @@ use crate::hints::error::{OsHintError, OsHintResult};
 use crate::hints::types::HintContext;
 use crate::hints::vars::Ids;
 
-/// Supplies the bounded policy; Cairo commits the complete list into the OS configuration.
-pub(crate) fn insert_committed_data_readers(
-    ctx: &mut HintContext<'_>,
-    readers: &starknet_api::committed_data::CommittedDataReaders,
+/// Supplies execution permission. Cairo enforces a boolean and rejects disabled reads.
+pub(crate) fn load_use_committed_data<S: StateReader>(
+    hp: &mut SnosHintProcessor<'_, S>,
+    mut ctx: HintContext<'_>,
 ) -> OsHintResult {
-    let pointer = ctx.vm.add_memory_segment();
-    let values: Vec<MaybeRelocatable> =
-        readers.as_slice().iter().map(|reader| (*reader.0.key()).into()).collect();
-    ctx.vm.load_data(pointer, &values)?;
-    ctx.insert_value(Ids::CommittedDataReaders, pointer)?;
-    ctx.insert_value(
-        Ids::NCommittedDataReaders,
-        starknet_types_core::felt::Felt::from(values.len()),
-    )?;
+    ctx.insert_value(Ids::UseCommittedData, usize::from(hp.os_hints_config.use_committed_data))?;
     Ok(())
 }
 
@@ -29,9 +21,8 @@ pub(crate) fn load_committed_data_witness<S: StateReader>(
     mut ctx: HintContext<'_>,
 ) -> OsHintResult {
     let root = ctx.get_integer(Ids::CommittedDataRoot)?;
-    let publisher = ctx.get_integer(Ids::CommittedDataPublisher)?;
     let index = ctx.get_integer(Ids::CommittedDataIndex)?;
-    let witness = hp.committed_data_witness(root, publisher, index).ok_or_else(|| {
+    let witness = hp.committed_data_witness(root, index).ok_or_else(|| {
         OsHintError::AssertionFailed { message: "CommittedData witness unavailable".into() }
     })?;
     let path = ctx.vm.add_memory_segment();

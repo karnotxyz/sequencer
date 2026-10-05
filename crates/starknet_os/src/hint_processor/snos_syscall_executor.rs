@@ -180,45 +180,23 @@ impl<S: StateReader> SyscallExecutor for SnosHintProcessor<'_, S> {
         if request.function_selector == selector_from_name(EXECUTE_ENTRY_POINT_NAME) {
             return Err(handle_failure(INVALID_ARGUMENT_FELT));
         }
-        let block_number = syscall_handler
-            .get_current_execution_helper()?
-            .os_block_input
-            .block_info
-            .block_number
-            .0;
-        let committed_data_active = syscall_handler
-            .os_hints_config
-            .committed_data_activation_block
-            .is_some_and(|height| block_number >= height);
         if *request.contract_address.0.key()
             == blockifier::execution::syscalls::committed_data::COMMITTED_DATA_ADDRESS
-            && committed_data_active
         {
             let invalid = |info: &str| SyscallExecutorBaseError::InvalidSyscallInput {
                 input: request.function_selector.0,
                 info: info.into(),
             };
-            let publisher = *syscall_handler
-                .get_mut_current_execution_helper()?
-                .tx_execution_iter
-                .get_mut_tx_execution_info_ref()?
-                .get_mut_call_info_tracker()?
-                .call_info
-                .call
-                .storage_address
-                .0
-                .key();
-            blockifier::execution::syscalls::committed_data::validate_reader(
-                &syscall_handler.os_hints_config.committed_data_readers,
-                publisher,
-            )?;
+            if !syscall_handler.os_hints_config.use_committed_data {
+                return Err(invalid("committed-data reads require use_committed_data=true").into());
+            }
             blockifier::execution::syscalls::committed_data::validate_read_request(
                 request.function_selector.0,
                 &request.calldata.0,
                 *remaining_gas,
             )?;
             let witness = syscall_handler
-                .committed_data_witness(request.calldata.0[0], publisher, request.calldata.0[1])
+                .committed_data_witness(request.calldata.0[0], request.calldata.0[1])
                 .ok_or_else(|| invalid("committed_data witness unavailable"))?;
             *remaining_gas = remaining_gas
                 .checked_sub(

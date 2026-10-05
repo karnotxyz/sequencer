@@ -74,11 +74,10 @@ pub struct OsHintsConfig {
     pub chain_info: OsChainInfo,
     pub public_keys: Option<Vec<Felt>>,
     pub rng_seed_salt: Option<Felt>,
-    /// Inclusive activation height, committed in the OS configuration hash. None disables it.
+    /// Execution permission, default false. Disabled reads abort proving, never select a revert.
+    /// Not a consensus activation policy and not included in the config hash or public output.
     #[cfg_attr(feature = "deserialize", serde(default))]
-    pub committed_data_activation_block: Option<u64>,
-    #[cfg_attr(feature = "deserialize", serde(default))]
-    pub committed_data_readers: starknet_api::committed_data::CommittedDataReaders,
+    pub use_committed_data: bool,
     /// Untrusted private witnesses. Cairo, not this input, establishes membership.
     #[cfg_attr(
         feature = "deserialize",

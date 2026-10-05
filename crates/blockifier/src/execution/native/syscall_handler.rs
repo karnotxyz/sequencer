@@ -507,14 +507,11 @@ impl StarknetSyscallHandler for &mut NativeSyscallHandler<'_> {
             .maybe_block_direct_execute_call(selector)
             .map_err(|e| self.handle_error(remaining_gas, e))?;
 
-        if address == crate::execution::syscalls::committed_data::COMMITTED_DATA_ADDRESS
-            && self.base.context.tx_context.block_context.committed_data_is_active()
-        {
+        if address == crate::execution::syscalls::committed_data::COMMITTED_DATA_ADDRESS {
             self.base.account_committed_data_read();
             let value = crate::execution::syscalls::committed_data::read_value(
-                &self.base.context.tx_context.block_context.committed_data_readers,
+                self.base.context.tx_context.block_context.use_committed_data,
                 &self.base.context.tx_context.block_context.committed_data_witnesses,
-                *self.base.call.storage_address.0.key(),
                 entry_point_selector,
                 calldata,
                 remaining_gas,
@@ -523,7 +520,7 @@ impl StarknetSyscallHandler for &mut NativeSyscallHandler<'_> {
             .map_err(|e| self.handle_error(remaining_gas, e.into()))?;
             log::debug!(
                 target: "committed_data_native",
-                "Native committed_data system call completed: publisher={}",
+                "Native committed_data system call completed: caller={}",
                 self.base.call.storage_address
             );
             return Ok(vec![value]);

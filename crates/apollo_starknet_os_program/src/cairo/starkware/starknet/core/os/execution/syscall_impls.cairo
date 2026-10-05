@@ -126,6 +126,10 @@ from starkware.starknet.core.os.execution.account_backward_compatibility import 
     is_v1_bound_account_cairo1,
     should_exclude_l1_data_gas,
 )
+from starkware.starknet.core.os.execution.committed_data import (
+    COMMITTED_DATA_CONTRACT_ADDRESS,
+    execute_committed_data_call,
+)
 from starkware.starknet.core.os.execution.deploy_contract import deploy_contract
 from starkware.starknet.core.os.execution.entry_point_utils import select_execute_entry_point_func
 from starkware.starknet.core.os.execution.execute_entry_point import ExecutionContext
@@ -144,12 +148,6 @@ from starkware.starknet.core.os.state.commitment import StateEntry
 from starkware.starknet.core.os.transaction_hash.transaction_hash import (
     compute_meta_tx_v0_hash,
     update_pedersen_in_builtin_ptrs,
-)
-
-from starkware.starknet.core.os.execution.committed_data import (
-    COMMITTED_DATA_CONTRACT_ADDRESS,
-    execute_committed_data_call,
-    committed_data_is_active,
 )
 
 // Returns a failure response with a single felt.
@@ -183,7 +181,6 @@ func execute_call_contract{
     outputs: OsCarriedOutputs*,
 }(block_context: BlockContext*, caller_execution_context: ExecutionContext*) {
     alloc_locals;
-    let (local committed_data_active) = committed_data_is_active(block_context);
     local request: CallContractRequest* = cast(
         syscall_ptr + RequestHeader.SIZE, CallContractRequest*
     );
@@ -201,17 +198,12 @@ func execute_call_contract{
     }
 
     if (request.contract_address == COMMITTED_DATA_CONTRACT_ADDRESS) {
-        if (committed_data_active != 0) {
-            execute_committed_data_call(
-                request=request,
-                publisher=caller_execution_context.execution_info.contract_address,
-                remaining_gas=remaining_gas,
-                n_readers=block_context.os_global_context.starknet_os_config.n_committed_data_readers,
-                readers=block_context.os_global_context.starknet_os_config.committed_data_readers,
-            );
-            return ();
-        }
-        // The ordinary dispatch below also applies before activation.
+        execute_committed_data_call(
+            request=request,
+            remaining_gas=remaining_gas,
+            use_committed_data=block_context.os_global_context.use_committed_data,
+        );
+        return ();
     }
     tempvar contract_address = request.contract_address;
     let (state_entry: StateEntry*) = dict_read{dict_ptr=contract_state_changes}(

@@ -1,5 +1,4 @@
 from starkware.cairo.common.cairo_builtins import HashBuiltin
-from starkware.cairo.common.math import assert_nn
 from starkware.cairo.common.hash_state import (
     hash_finalize,
     hash_init,
@@ -21,18 +20,13 @@ struct StarknetOsConfig {
     // The default hash is 0, indicating that encryption will not happen and that there are no
     // public keys, as is the case in Starknet environments.
     public_keys_hash: felt,
-    // Zero disables this extension; otherwise activation block + 1. Bound into the config hash.
-    committed_data_activation: felt,
-    n_committed_data_readers: felt,
-    committed_data_readers: felt*,
 }
 
 // Calculates the hash of StarkNet OS config. The public keys hash is not included if there are no
 // public keys (i.e., for envs where the state diff is not encrypted).
-func get_starknet_os_config_hash{hash_ptr: HashBuiltin*, range_check_ptr}(
-    starknet_os_config: StarknetOsConfig*
-) -> (starknet_os_config_hash: felt) {
-    alloc_locals;
+func get_starknet_os_config_hash{hash_ptr: HashBuiltin*}(starknet_os_config: StarknetOsConfig*) -> (
+    starknet_os_config_hash: felt
+) {
     let (hash_state_ptr) = hash_init();
     let (hash_state_ptr) = hash_update_single(
         hash_state_ptr=hash_state_ptr, item=STARKNET_OS_CONFIG_VERSION
@@ -43,10 +37,7 @@ func get_starknet_os_config_hash{hash_ptr: HashBuiltin*, range_check_ptr}(
     let (hash_state_ptr) = hash_update_single(
         hash_state_ptr=hash_state_ptr, item=starknet_os_config.fee_token_address
     );
-    static_assert StarknetOsConfig.SIZE == 6;
-    assert_nn(starknet_os_config.n_committed_data_readers);
-    assert_nn(64 - starknet_os_config.n_committed_data_readers);
-    local range_check_ptr = range_check_ptr;
+    static_assert StarknetOsConfig.SIZE == 3;
     // If in the future another optional field is added to StarknetOsConfig,
     // remove the following `if`.
     if (starknet_os_config.public_keys_hash != DEFAULT_PUBLIC_KEYS_HASH) {
@@ -55,26 +46,6 @@ func get_starknet_os_config_hash{hash_ptr: HashBuiltin*, range_check_ptr}(
         );
     } else {
         // align the stack.
-        tempvar hash_ptr = hash_ptr;
-        tempvar hash_state_ptr = hash_state_ptr;
-    }
-    // Preserve the upstream config hash when disabled. A versioned suffix prevents ambiguity.
-    if (starknet_os_config.committed_data_activation != 0) {
-        let (hash_state_ptr) = hash_update_single(
-            hash_state_ptr=hash_state_ptr, item='COMMITTED_DATA_V1'
-        );
-        let (hash_state_ptr) = hash_update_single(
-            hash_state_ptr=hash_state_ptr, item=starknet_os_config.committed_data_activation
-        );
-        let (hash_state_ptr) = hash_update_single(
-            hash_state_ptr=hash_state_ptr, item=starknet_os_config.n_committed_data_readers
-        );
-        let (hash_state_ptr) = hash_update(
-            hash_state_ptr=hash_state_ptr,
-            data_ptr=starknet_os_config.committed_data_readers,
-            data_length=starknet_os_config.n_committed_data_readers,
-        );
-    } else {
         tempvar hash_ptr = hash_ptr;
         tempvar hash_state_ptr = hash_state_ptr;
     }

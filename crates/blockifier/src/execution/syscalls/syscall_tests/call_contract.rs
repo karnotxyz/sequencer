@@ -575,57 +575,91 @@ fn test_nested_call_storage_revert(runnable_version: RunnableCairo1) {
 
 #[cfg_attr(feature = "cairo_native", test_case(RunnableCairo1::Native; "native"))]
 #[test_case(RunnableCairo1::Casm; "vm")]
-fn committed_data_reads_match_activation_and_execution_engine(runnable: RunnableCairo1) {
+fn committed_data_reads_require_permission_across_execution_engines(runnable: RunnableCairo1) {
     use starknet_types_core::felt::Felt;
 
     use crate::execution::syscalls::committed_data::{CommittedDataSet, CommittedDataWitnesses};
     use crate::state::state_api::State;
 
     let contract = FeatureContract::TestContract(CairoVersion::Cairo1(runnable));
-    let address = contract.get_instance_address(0);
-    let tree = CommittedDataSet::new(**address, vec![Felt::MAX]).unwrap();
-    for activation in [None, Some(0), Some(u64::MAX)] {
-        let mut state = test_state(&ChainInfo::create_for_testing(), BALANCE, &[(contract, 1)]);
-        state.set_storage_at(address, StorageKey::from(45_u32), tree.root()).unwrap();
-        let mut context = BlockContext::create_for_testing();
-        context.committed_data_activation_block = activation;
-        context.committed_data_readers =
-            starknet_api::committed_data::CommittedDataReaders::new(vec![address]).unwrap();
-        context.committed_data_witnesses =
-            Arc::new(CommittedDataWitnesses::new(vec![tree.witness(0).unwrap()]).unwrap());
-        let call = CallEntryPoint {
-            entry_point_selector: selector_from_name("test_committed_data_read"),
-            calldata: calldata_macro![Felt::ZERO, Felt::MAX],
-            ..trivial_external_entry_point_new(contract)
-        };
-        let result = call.execute_directly_given_block_context(&mut state, context);
-        if activation == Some(0) {
-            let info = result.unwrap();
-            assert!(!info.execution.failed);
-            info.check_native_execution(runnable.is_cairo_native());
-            assert!(
-                info.execution.gas_consumed
-                    >= crate::execution::syscalls::committed_data::COMMITTED_DATA_READ_GAS
-            );
-            for (builtin, minimum) in
-                &crate::execution::syscalls::committed_data::read_os_resources()
-                    .builtin_instance_counter
-            {
+    let tree = CommittedDataSet::new(vec![Felt::MAX]).unwrap();
+    for use_committed_data in [false, true] {
+        for instance in 0..2 {
+            let address = contract.get_instance_address(instance);
+            let mut state = test_state(&ChainInfo::create_for_testing(), BALANCE, &[(contract, 2)]);
+            state.set_storage_at(address, StorageKey::from(45_u32), tree.root()).unwrap();
+            let mut context = BlockContext::create_for_testing();
+            context.use_committed_data = use_committed_data;
+            context.committed_data_witnesses =
+                Arc::new(CommittedDataWitnesses::new(vec![tree.witness(0).unwrap()]).unwrap());
+            let call = CallEntryPoint {
+                entry_point_selector: selector_from_name("test_committed_data_read"),
+                calldata: calldata_macro![Felt::ZERO, Felt::MAX],
+                storage_address: address,
+                code_address: Some(address),
+                ..trivial_external_entry_point_new(contract)
+            };
+            let result = call.execute_directly_given_block_context(&mut state, context);
+            if use_committed_data {
+                let info = result.unwrap();
+                assert!(!info.execution.failed);
+                info.check_native_execution(runnable.is_cairo_native());
                 assert!(
-                    info.builtin_counters.get(&(*builtin).into()).copied().unwrap_or_default()
-                        >= *minimum
+                    info.execution.gas_consumed
+                        >= crate::execution::syscalls::committed_data::COMMITTED_DATA_READ_GAS
                 );
+                for (builtin, minimum) in
+                    &crate::execution::syscalls::committed_data::read_os_resources()
+                        .builtin_instance_counter
+                {
+                    assert!(
+                        info.builtin_counters.get(&(*builtin).into()).copied().unwrap_or_default()
+                            >= *minimum
+                    );
+                }
+            } else {
+                assert!(result.is_err() || result.unwrap().execution.failed);
             }
-        } else {
-            assert!(result.is_err() || result.unwrap().execution.failed);
         }
     }
 }
 
 #[cfg_attr(feature = "cairo_native", test_case(RunnableCairo1::Native; "native"))]
 #[test_case(RunnableCairo1::Casm; "vm")]
-fn committed_data_unavailable_rejects_transaction_without_state_changes(runnable: RunnableCairo1) {
+fn committed_data_disabled_never_dispatches_an_ordinary_contract(runnable: RunnableCairo1) {
+    use starknet_api::core::ContractAddress;
+    use starknet_types_core::felt::Felt;
+
+    use crate::execution::syscalls::committed_data::COMMITTED_DATA_ADDRESS;
+    use crate::state::state_api::State;
+
+    let contract = FeatureContract::TestContract(CairoVersion::Cairo1(runnable));
+    let mut state = test_state(&ChainInfo::create_for_testing(), BALANCE, &[(contract, 1)]);
+    let reserved = ContractAddress::try_from(COMMITTED_DATA_ADDRESS).unwrap();
+    // Simulate pre-existing code: disabled dispatch must not execute it.
+    state.set_class_hash_at(reserved, contract.get_class_hash()).unwrap();
+    let call = CallEntryPoint {
+        entry_point_selector: selector_from_name("test_call_contract"),
+        calldata: calldata_macro![
+            COMMITTED_DATA_ADDRESS,
+            selector_from_name("test_storage_read").0,
+            Felt::ONE,
+            Felt::ZERO
+        ],
+        ..trivial_external_entry_point_new(contract)
+    };
+    let result =
+        call.execute_directly_given_block_context(&mut state, BlockContext::create_for_testing());
+    assert!(result.is_err() || result.unwrap().execution.failed);
+}
+
+#[cfg_attr(feature = "cairo_native", test_case(RunnableCairo1::Native; "native"))]
+#[test_case(RunnableCairo1::Casm; "vm")]
+fn committed_data_disabled_or_unavailable_rejects_transaction_without_state_changes(
+    runnable: RunnableCairo1,
+) {
     use starknet_api::invoke_tx_args;
+    use starknet_api::transaction::TransactionVersion;
     use starknet_types_core::felt::Felt;
 
     use crate::execution::syscalls::committed_data::{
@@ -646,80 +680,53 @@ fn committed_data_unavailable_rejects_transaction_without_state_changes(runnable
     #[derive(Debug)]
     struct FailingProvider;
     impl CommittedDataProvider for FailingProvider {
-        fn value(&self, _: Felt, _: Felt, _: u32) -> Result<Option<Felt>, CommittedDataError> {
+        fn value(&self, _: Felt, _: u32) -> Result<Option<Felt>, CommittedDataError> {
             Err(CommittedDataError::Provider("test provider unavailable".into()))
         }
     }
 
-    for provider_failure in [false, true] {
+    for (version, (enabled, provider_failure)) in [
+        TransactionVersion::ZERO,
+        TransactionVersion::THREE,
+    ]
+    .into_iter()
+    .cartesian_product([(false, false), (true, false), (true, true)])
+    {
         let mut block_context = BlockContext::create_for_testing();
-        block_context.committed_data_activation_block = Some(0);
+        block_context.use_committed_data = enabled;
         if provider_failure {
             block_context.committed_data_witnesses =
                 Arc::new(CommittedDataWitnesses::from_provider(Arc::new(FailingProvider)));
         }
         let data = create_test_init_data(&block_context.chain_info, CairoVersion::Cairo1(runnable));
         let mut state = data.state;
-        block_context.committed_data_readers =
-            starknet_api::committed_data::CommittedDataReaders::new(vec![data.contract_address])
-                .unwrap();
-        let tree = CommittedDataSet::new(**data.contract_address, vec![Felt::MAX]).unwrap();
+        let tree = CommittedDataSet::new(vec![Felt::MAX]).unwrap();
+        if !enabled {
+            // Even a valid witness must not permit a disabled read.
+            block_context.committed_data_witnesses =
+                Arc::new(CommittedDataWitnesses::new(vec![tree.witness(0).unwrap()]).unwrap());
+        }
         state.set_storage_at(data.contract_address, StorageKey::from(45_u32), tree.root()).unwrap();
         let before = state.to_state_diff().unwrap();
         let nonce_before = state.get_nonce_at(data.account_address).unwrap();
         let tx = invoke_tx_with_default_flags(invoke_tx_args! {
+            version,
+            max_fee: BALANCE,
             resource_bounds: default_all_resource_bounds(),
             sender_address: data.account_address,
             calldata: create_calldata(data.contract_address, "test_committed_data_read", &[Felt::ZERO, Felt::MAX]),
         });
         let result = tx.execute(&mut state, &block_context);
-        assert!(
-            matches!(result, Err(TransactionExecutionError::CommittedDataAvailability(_))),
-            "{result:?}"
-        );
+        let Err(TransactionExecutionError::CommittedDataAvailability(error)) = result else {
+            panic!("expected committed-data rejection, got {result:?}");
+        };
+        assert!(matches!(
+            (enabled, provider_failure, error),
+            (false, _, CommittedDataError::Disabled)
+                | (true, false, CommittedDataError::Unavailable)
+                | (true, true, CommittedDataError::Provider(_))
+        ));
         assert_eq!(state.get_nonce_at(data.account_address).unwrap(), nonce_before);
         assert_eq!(state.to_state_diff().unwrap(), before);
     }
-}
-
-#[cfg_attr(feature = "cairo_native", test_case(RunnableCairo1::Native; "native"))]
-#[test_case(RunnableCairo1::Casm; "vm")]
-fn committed_data_unapproved_reader_reverts_and_pays_fee(runnable: RunnableCairo1) {
-    use starknet_api::invoke_tx_args;
-    use starknet_types_core::felt::Felt;
-
-    use crate::execution::syscalls::committed_data::{
-        CommittedDataError,
-        CommittedDataProvider,
-        CommittedDataWitnesses,
-    };
-    use crate::transaction::test_utils::{
-        create_test_init_data,
-        default_all_resource_bounds,
-        invoke_tx_with_default_flags,
-    };
-    use crate::transaction::transactions::ExecutableTransaction;
-    #[derive(Debug)]
-    struct MustNotRead;
-    impl CommittedDataProvider for MustNotRead {
-        fn value(&self, _: Felt, _: Felt, _: u32) -> Result<Option<Felt>, CommittedDataError> {
-            panic!("unapproved caller must be rejected before provider access")
-        }
-    }
-    let mut context = BlockContext::create_for_testing();
-    context.committed_data_activation_block = Some(0);
-    context.committed_data_witnesses =
-        Arc::new(CommittedDataWitnesses::from_provider(Arc::new(MustNotRead)));
-    let data = create_test_init_data(&context.chain_info, CairoVersion::Cairo1(runnable));
-    let mut state = data.state;
-    let nonce = state.get_nonce_at(data.account_address).unwrap();
-    let tx = invoke_tx_with_default_flags(invoke_tx_args! {
-        resource_bounds: default_all_resource_bounds(),
-        sender_address: data.account_address,
-        calldata: create_calldata(data.contract_address, "test_committed_data_read", &[Felt::ZERO, Felt::MAX]),
-    });
-    let info = tx.execute(&mut state, &context).unwrap();
-    assert!(info.revert_error.is_some());
-    assert!(info.receipt.fee.0 > 0);
-    assert_ne!(state.get_nonce_at(data.account_address).unwrap(), nonce);
 }

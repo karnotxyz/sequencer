@@ -122,7 +122,7 @@ pub struct SnosHintProcessor<'a, S: StateReader> {
     pub(crate) program: &'a Program,
     pub(crate) execution_helpers_manager: ExecutionHelpersManager<'a, S>,
     pub(crate) os_hints_config: OsHintsConfig,
-    committed_data_index: HashMap<(Felt, Felt, Felt), usize>,
+    committed_data_index: HashMap<(Felt, Felt), usize>,
     pub(crate) deprecated_compiled_classes_iter: IntoIter<ClassHash, ContractClass>,
     pub(crate) deprecated_class_hashes: HashSet<ClassHash>,
     pub(crate) compiled_classes: BTreeMap<CompiledClassHash, CasmContractClass>,
@@ -167,7 +167,7 @@ impl<'a, S: StateReader> SnosHintProcessor<'a, S> {
         }
         let mut committed_data_index = HashMap::with_capacity(witnesses.len());
         for (offset, witness) in witnesses.iter().enumerate() {
-            let key = (witness.root, witness.publisher, Felt::from(witness.index));
+            let key = (witness.root, Felt::from(witness.index));
             if committed_data_index.insert(key, offset).is_some() {
                 return Err(OsInputError::CommittedData("Duplicate witness".into()).into());
             }
@@ -207,11 +207,10 @@ impl<'a, S: StateReader> SnosHintProcessor<'a, S> {
     pub(crate) fn committed_data_witness(
         &self,
         root: Felt,
-        publisher: Felt,
         index: Felt,
     ) -> Option<&blockifier::execution::syscalls::committed_data::CommittedDataWitness> {
         self.committed_data_index
-            .get(&(root, publisher, index))
+            .get(&(root, index))
             .and_then(|offset| self.os_hints_config.committed_data_witnesses.get(*offset))
     }
 

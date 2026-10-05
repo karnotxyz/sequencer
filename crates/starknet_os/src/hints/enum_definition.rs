@@ -37,7 +37,10 @@ use crate::hints::hint_implementation::cairo1_revert::implementation::{
     read_storage_key_for_revert,
     write_storage_key_for_revert,
 };
-use crate::hints::hint_implementation::committed_data::load_committed_data_witness;
+use crate::hints::hint_implementation::committed_data::{
+    load_committed_data_witness,
+    load_use_committed_data,
+};
 use crate::hints::hint_implementation::compiled_class::implementation::{
     assert_end_of_bytecode_segments,
     assign_bytecode_segments,
@@ -470,6 +473,7 @@ define_hint_enum!(
     S,
     StateReader,
     (LoadCommittedDataWitness, load_committed_data_witness),
+    (LoadUseCommittedData, load_use_committed_data),
     (LoadClass, load_class),
     (RelocateSha256Segment, relocate_sha256_segment),
     (EnterScopeWithBytecodeSegmentStructure, enter_scope_with_bytecode_segment_structure),

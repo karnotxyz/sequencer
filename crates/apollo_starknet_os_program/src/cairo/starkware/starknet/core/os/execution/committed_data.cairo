@@ -9,16 +9,15 @@ const COMMITTED_DATA_TREE_HEIGHT = 19;
 const COMMITTED_DATA_LEAF_DOMAIN = 'COMMITTED_DATA_V1';
 // Experimental gas charge; must be profiled before production activation.
 const COMMITTED_DATA_READ_GAS = 1000000;
-const MAX_COMMITTED_DATA_READERS = 64;
 
-// The publisher is part of the leaf domain: an identical index in another feed is not interchangeable.
+// Roots bind the indexed values independently of the contract reading them.
 // Root must come from authenticated, current contract state, never just from a witness hint.
 func verify_committed_data_value{range_check_ptr, poseidon_ptr: PoseidonBuiltin*}(
-    root: felt, publisher: felt, index: felt, value: felt, siblings: felt*
+    root: felt, index: felt, value: felt, siblings: felt*
 ) {
     alloc_locals;
-    local leaf_data: felt* = new (COMMITTED_DATA_LEAF_DOMAIN, publisher, index, value);
-    let (leaf) = poseidon_hash_many(n=4, elements=leaf_data);
+    local leaf_data: felt* = new (COMMITTED_DATA_LEAF_DOMAIN, index, value);
+    let (leaf) = poseidon_hash_many(n=3, elements=leaf_data);
     let (calculated_root) = committed_data_path(
         node=leaf, index=index, siblings=siblings, remaining=COMMITTED_DATA_TREE_HEIGHT
     );
@@ -48,8 +47,8 @@ func committed_data_path{range_check_ptr, poseidon_ptr: PoseidonBuiltin*}(
 from starkware.starknet.common.new_syscalls import (
     CallContractRequest,
     CallContractResponse,
-    ResponseHeader,
     FailureReason,
+    ResponseHeader,
 )
 from starkware.starknet.core.os.builtins import BuiltinPointers, SelectableBuiltins
 
@@ -57,22 +56,11 @@ const COMMITTED_DATA_GET_VALUE_SELECTOR = 10885146295340278379433484927448694533
 
 func execute_committed_data_call{
     range_check_ptr, syscall_ptr: felt*, builtin_ptrs: BuiltinPointers*
-}(
-    request: CallContractRequest*,
-    publisher: felt,
-    remaining_gas: felt,
-    n_readers: felt,
-    readers: felt*,
-) {
+}(request: CallContractRequest*, remaining_gas: felt, use_committed_data: felt) {
     alloc_locals;
     assert request.contract_address = COMMITTED_DATA_CONTRACT_ADDRESS;
-    assert_nn(n_readers);
-    assert_nn(MAX_COMMITTED_DATA_READERS - n_readers);
-    let (approved) = committed_data_reader_is_approved(publisher, n_readers, readers);
-    if (approved == 0) {
-        committed_data_failure(remaining_gas, ERROR_INVALID_ARGUMENT);
-        return ();
-    }
+    // Reject this proof instead of making execution depend on a private mode bit.
+    assert use_committed_data = 1;
     if (request.selector != COMMITTED_DATA_GET_VALUE_SELECTOR) {
         committed_data_failure(remaining_gas, ERROR_INVALID_ARGUMENT);
         return ();
@@ -93,7 +81,6 @@ func execute_committed_data_call{
     }
     local committed_data_root = request.calldata_start[0];
     local committed_data_index = request.calldata_start[1];
-    local committed_data_publisher = publisher;
     local committed_data_value;
     local committed_data_siblings: felt*;
     %{ LoadCommittedDataWitness %}
@@ -102,7 +89,6 @@ func execute_committed_data_call{
     with poseidon_ptr {
         verify_committed_data_value(
             root=committed_data_root,
-            publisher=committed_data_publisher,
             index=committed_data_index,
             value=committed_data_value,
             siblings=committed_data_siblings,
@@ -134,32 +120,7 @@ func execute_committed_data_call{
     return ();
 }
 
-// Bounded by the configuration and the call handler. The list itself is committed in the
-// OS configuration hash, so a hint cannot grant additional readers admission.
-func committed_data_reader_is_approved(publisher: felt, n_readers: felt, readers: felt*) -> (
-    approved: felt
-) {
-    if (n_readers == 0) {
-        return (approved=0);
-    }
-    if (readers[0] == publisher) {
-        return (approved=1);
-    }
-    return committed_data_reader_is_approved(publisher, n_readers - 1, readers + 1);
-}
-
-// Activation is part of the OS config hash accepted by settlement, never a free hint flag.
 from starkware.cairo.common.math_cmp import is_le_felt
-from starkware.starknet.core.os.block_context import BlockContext
-
-@known_ap_change
-func committed_data_is_active{range_check_ptr}(block_context: BlockContext*) -> (active: felt) {
-    let activation = block_context.os_global_context.starknet_os_config.committed_data_activation;
-    let enabled = is_le_felt(1, activation);
-    let started = is_le_felt(activation, block_context.block_info_for_execute.block_number + 1);
-    return (active=enabled * started);
-}
-
 from starkware.starknet.core.os.constants import ERROR_INVALID_ARGUMENT, ERROR_OUT_OF_GAS
 
 @known_ap_change

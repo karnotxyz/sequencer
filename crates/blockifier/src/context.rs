@@ -127,9 +127,9 @@ pub struct BlockContext {
     pub(crate) chain_info: ChainInfo,
     pub(crate) versioned_constants: VersionedConstants,
     pub bouncer_config: BouncerConfig,
-    /// Inclusive activation height; None preserves ordinary contract dispatch.
-    pub committed_data_activation_block: Option<u64>,
-    pub committed_data_readers: starknet_api::committed_data::CommittedDataReaders,
+    /// Allows committed-data reads for this execution. False rejects reads; the address stays
+    /// reserved.
+    pub use_committed_data: bool,
     pub committed_data_witnesses:
         Arc<crate::execution::syscalls::committed_data::CommittedDataWitnesses>,
 }
@@ -146,15 +146,9 @@ impl BlockContext {
             chain_info,
             versioned_constants,
             bouncer_config,
-            committed_data_activation_block: None,
-            committed_data_readers: Default::default(),
+            use_committed_data: false,
             committed_data_witnesses: Default::default(),
         }
-    }
-
-    pub fn committed_data_is_active(&self) -> bool {
-        self.committed_data_activation_block
-            .is_some_and(|height| self.block_info.block_number.0 >= height)
     }
 
     pub fn block_info(&self) -> &BlockInfo {

@@ -27,6 +27,8 @@ struct OsGlobalContext {
     starknet_os_config: StarknetOsConfig,
     starknet_os_config_hash: felt,
     virtual_os_config_hash: felt,
+    // Private execution permission. A disabled read fails the proof; it cannot select a revert.
+    use_committed_data: felt,
     // Compiled class facts available globally for all blocks.
     compiled_class_facts_bundle: CompiledClassFactsBundle,
 

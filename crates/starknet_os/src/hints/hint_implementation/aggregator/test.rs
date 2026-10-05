@@ -789,8 +789,6 @@ fn test_aggregator(
         fee_token_address: Felt::ZERO,
         chain_id: Felt::ZERO,
         public_keys: None,
-        committed_data_activation_block: None,
-        committed_data_readers: Default::default(),
     };
 
     // Create the aggregator hint processor.
