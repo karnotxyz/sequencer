@@ -7,8 +7,8 @@ from starkware.cairo.common.math import assert_nn, unsigned_div_rem
 const COMMITTED_DATA_CONTRACT_ADDRESS = 0x6c5f4559c7041984537bc078c71443fdc58b2e1bab302b341ec12b3d2cec44;
 const COMMITTED_DATA_TREE_HEIGHT = 19;
 const COMMITTED_DATA_LEAF_DOMAIN = 'COMMITTED_DATA_V1';
-// Experimental gas charge; must be profiled before production activation.
-const COMMITTED_DATA_READ_GAS = 1000000;
+// Additional charge after CALL_CONTRACT_GAS_COST; total measured special-call cost is 124701.
+const COMMITTED_DATA_READ_GAS = 33141;
 
 // Roots bind the indexed values independently of the contract reading them.
 // Root must come from authenticated, current contract state, never just from a witness hint.

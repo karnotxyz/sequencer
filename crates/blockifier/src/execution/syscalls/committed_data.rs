@@ -32,20 +32,20 @@ pub const COMMITTED_DATA_TREE_HEIGHT: usize = 19;
 pub const MAX_COMMITTED_DATA_VALUES: usize = 1 << COMMITTED_DATA_TREE_HEIGHT;
 /// Bound on distinct witnesses supplied to one replay request.
 pub const MAX_COMMITTED_DATA_WITNESSES: usize = 65_536;
-/// Conservative additional charge for a 19-level read, shared with Cairo OS.
-pub const COMMITTED_DATA_READ_GAS: u64 = 1_000_000;
-/// Conservative OS resource envelope per attempted special read. Kept separate from contract
-/// execution so step-tracked callers and block builtin limits cannot hide the membership work.
+/// Additional charge for a 19-level read after the normal `CallContract` cost is deducted.
+/// Together they charge the measured complete special-call cost of 124,701 gas.
+pub const COMMITTED_DATA_READ_GAS: u64 = 33_141;
+/// Measured OS resource delta beyond the normal `CallContract` resource entry.
 pub fn read_os_resources() -> &'static cairo_vm::vm::runners::cairo_runner::ExecutionResources {
     use cairo_vm::types::builtin_name::BuiltinName;
     use cairo_vm::vm::runners::cairo_runner::ExecutionResources;
     static RESOURCES: std::sync::LazyLock<ExecutionResources> =
         std::sync::LazyLock::new(|| ExecutionResources {
-            n_steps: 4096,
-            n_memory_holes: 32,
+            n_steps: 194,
+            n_memory_holes: 0,
             builtin_instance_counter: std::collections::BTreeMap::from([
-                (BuiltinName::range_check, 128),
-                (BuiltinName::poseidon, 32),
+                (BuiltinName::range_check, 49),
+                (BuiltinName::poseidon, 21),
             ]),
         });
     &RESOURCES
@@ -323,12 +323,29 @@ where
 
 #[cfg(test)]
 mod tests {
+    use starknet_api::versioned_constants_logic::VersionedConstantsTrait;
+
     use super::*;
+    use crate::blockifier_versioned_constants::VersionedConstants;
+    use crate::utils::get_gas_cost_from_vm_resources;
 
     #[test]
     fn address_matches_versioned_namespace() {
         assert_eq!(COMMITTED_DATA_ADDRESS, selector_from_name("committed_data_v1").0);
         assert_ne!(COMMITTED_DATA_ADDRESS, selector_from_name("paradox_oracle_tick").0);
+    }
+
+    #[test]
+    fn measured_resource_delta_matches_additional_gas_charge() {
+        let gas_costs = &VersionedConstants::latest_constants().os_constants.gas_costs;
+        assert_eq!(
+            get_gas_cost_from_vm_resources(
+                read_os_resources(),
+                &gas_costs.base,
+                &gas_costs.builtins,
+            ),
+            COMMITTED_DATA_READ_GAS
+        );
     }
 
     #[test]
