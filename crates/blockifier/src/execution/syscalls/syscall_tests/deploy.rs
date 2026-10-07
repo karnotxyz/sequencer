@@ -23,6 +23,60 @@ use crate::test_utils::create_deploy_entry_point;
 use crate::test_utils::initial_test_state::test_state;
 use crate::transaction::objects::{CurrentTransactionInfo, TransactionInfo};
 
+#[test]
+fn committed_data_address_is_reserved_even_when_reads_are_disabled() {
+    use starknet_api::core::ContractAddress;
+    use starknet_api::execution_resources::GasAmount;
+
+    use crate::execution::entry_point::{
+        ConstructorContext,
+        EntryPointExecutionContext,
+        SierraGasRevertTracker,
+    };
+    use crate::execution::errors::{ConstructorEntryPointExecutionError, EntryPointExecutionError};
+    use crate::execution::execution_utils::execute_deployment;
+    use crate::execution::syscalls::committed_data::COMMITTED_DATA_ADDRESS;
+    use crate::state::errors::StateError;
+
+    let contract = FeatureContract::Empty(CairoVersion::Cairo1(RunnableCairo1::Casm));
+    let address = ContractAddress::try_from(COMMITTED_DATA_ADDRESS).unwrap();
+    for enabled in [false, true] {
+        let mut block_context = BlockContext::create_for_testing();
+        block_context.use_committed_data = enabled;
+        let mut state = test_state(&block_context.chain_info, Fee(0), &[(contract, 0)]);
+        let tx_info = TransactionInfo::Current(CurrentTransactionInfo::create_for_testing());
+        let mut context = EntryPointExecutionContext::new_invoke(
+            Arc::new(crate::context::TransactionContext {
+                block_context: Arc::new(block_context),
+                tx_info,
+            }),
+            false,
+            SierraGasRevertTracker::new(GasAmount(1_000_000_000)),
+        );
+        let result = execute_deployment(
+            &mut state,
+            &mut context,
+            ConstructorContext {
+                class_hash: contract.get_class_hash(),
+                code_address: Some(address),
+                storage_address: address,
+                caller_address: ContractAddress::default(),
+            },
+            calldata![],
+            &mut 1_000_000_000,
+        );
+        let Err(ConstructorEntryPointExecutionError::ExecutionError { error, .. }) = result else {
+            panic!("reserved address must reject deployment");
+        };
+        assert!(matches!(
+            *error,
+            EntryPointExecutionError::StateError(StateError::UnavailableContractAddress(rejected))
+                if rejected == address
+        ));
+        assert_eq!(state.get_class_hash_at(address).unwrap(), Default::default());
+    }
+}
+
 #[test_case(RunnableCairo1::Casm;"VM")]
 #[cfg_attr(feature = "cairo_native", test_case(RunnableCairo1::Native;"Native"))]
 fn no_constructor(runnable_version: RunnableCairo1) {

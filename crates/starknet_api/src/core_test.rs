@@ -5,17 +5,17 @@ use starknet_types_core::felt::Felt;
 use starknet_types_core::hash::{Pedersen, StarkHash as CoreStarkHash};
 
 use crate::core::{
-    ascii_as_felt,
-    calculate_contract_address,
-    felt_to_u128,
+    CONTRACT_ADDRESS_PREFIX,
     ChainId,
     ContractAddress,
     EthAddress,
+    L2_ADDRESS_UPPER_BOUND,
     Nonce,
     PatriciaKey,
     StarknetApiError,
-    CONTRACT_ADDRESS_PREFIX,
-    L2_ADDRESS_UPPER_BOUND,
+    ascii_as_felt,
+    calculate_contract_address,
+    felt_to_u128,
 };
 use crate::hash::StarkHash;
 use crate::transaction::fields::{Calldata, ContractAddressSalt};
@@ -134,5 +134,16 @@ fn test_value_too_large_for_type() {
         format!("{error}"),
         "Out of range Felt 340282366920938463463374607431768211456 is too big to convert to \
          'u128'."
+    );
+}
+
+#[test]
+fn os_config_hash_matches_upstream_reference() {
+    // Independent cairo-lang compute_hash_on_elements reference vector.
+    assert_eq!(
+        super::OsChainInfo::default().compute_os_config_hash(None).unwrap(),
+        Felt::from_hex_unchecked(
+            "0xd2af382dea9df0428d6821a57d14eec48fd1f6c478bf11032165766af75ce8"
+        )
     );
 }
