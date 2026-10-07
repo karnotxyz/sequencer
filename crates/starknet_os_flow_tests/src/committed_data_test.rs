@@ -1,10 +1,13 @@
 use std::sync::Arc;
 
 use blockifier::execution::syscalls::committed_data::{
+    read_os_resources,
     CommittedDataWitness,
     CommittedDataWitnesses,
 };
+use blockifier::execution::syscalls::vm_syscall_utils::SyscallSelector;
 use blockifier::test_utils::dict_state_reader::DictStateReader;
+use blockifier::test_utils::get_const_syscall_resources;
 use blockifier_test_utils::cairo_versions::{CairoVersion, RunnableCairo1};
 use blockifier_test_utils::calldata::create_calldata;
 use blockifier_test_utils::contracts::FeatureContract;
@@ -64,11 +67,78 @@ async fn prepare() -> TestRunner<DictStateReader> {
     builder.build().await
 }
 
+fn collect_profiled_committed_data_calls<'a>(
+    trace: &'a serde_json::Value,
+    calls: &mut Vec<&'a serde_json::Value>,
+) {
+    match trace {
+        serde_json::Value::Array(values) => {
+            for value in values {
+                collect_profiled_committed_data_calls(value, calls);
+            }
+        }
+        serde_json::Value::Object(object) => {
+            let is_leaf_call = object.get("selector").and_then(serde_json::Value::as_str)
+                == Some("CallContract")
+                && object
+                    .get("inner_syscalls")
+                    .and_then(serde_json::Value::as_array)
+                    .is_some_and(Vec::is_empty);
+            let uses_poseidon = object
+                .get("resources")
+                .and_then(|resources| {
+                    resources.pointer("/builtin_instance_counter/poseidon_builtin")
+                })
+                .and_then(serde_json::Value::as_u64)
+                .is_some_and(|count| count > 0);
+            if is_leaf_call && uses_poseidon {
+                calls.push(&object["resources"]);
+            }
+            for value in object.values() {
+                collect_profiled_committed_data_calls(value, calls);
+            }
+        }
+        _ => {}
+    }
+}
+
 #[tokio::test]
 async fn committed_data_root_rotation_and_shared_reads_full_os_pie() {
     let output = prepare().await.run();
     output.perform_default_validations();
     output.runner_output.cairo_pie.run_validity_checks().unwrap();
+    let trace = serde_json::to_value(&output.runner_output.txs_trace).unwrap();
+    let mut measured_calls = Vec::new();
+    collect_profiled_committed_data_calls(&trace, &mut measured_calls);
+    assert_eq!(measured_calls.len(), 4, "profile every committed-data read in the fixture");
+    let expected =
+        &get_const_syscall_resources(SyscallSelector::CallContract) + read_os_resources();
+    for measured in measured_calls {
+        assert_eq!(
+            usize::try_from(measured["n_steps"].as_u64().unwrap()).unwrap(),
+            expected.n_steps
+        );
+        assert_eq!(
+            usize::try_from(measured["n_memory_holes"].as_u64().unwrap()).unwrap(),
+            expected.n_memory_holes
+        );
+        assert_eq!(
+            usize::try_from(
+                measured["builtin_instance_counter"]["range_check_builtin"].as_u64().unwrap()
+            )
+            .unwrap(),
+            expected.builtin_instance_counter
+                [&cairo_vm::types::builtin_name::BuiltinName::range_check]
+        );
+        assert_eq!(
+            usize::try_from(
+                measured["builtin_instance_counter"]["poseidon_builtin"].as_u64().unwrap()
+            )
+            .unwrap(),
+            expected.builtin_instance_counter
+                [&cairo_vm::types::builtin_name::BuiltinName::poseidon]
+        );
+    }
     if let Some(path) = std::env::var_os("COMMITTED_DATA_POC_PIE_PATH") {
         output.runner_output.cairo_pie.write_zip_file(std::path::Path::new(&path), true).unwrap();
     }
