@@ -42,7 +42,9 @@ pub(crate) fn run_program<HP: HintProcessor + CommonHintProcessor>(
     hint_processor: &mut HP,
 ) -> Result<RunnerReturnObject, StarknetOsError> {
     // Init CairoRunConfig.
-    let cairo_run_config = CairoRunConfig { layout, relocate_mem: true, ..Default::default() };
+    // Cairo PIE construction reads the VM's segmented memory directly. Building dense relocated
+    // memory here only duplicates the completed VM state and causes a large end-of-run RSS spike.
+    let cairo_run_config = CairoRunConfig { layout, relocate_mem: false, ..Default::default() };
     let allow_missing_builtins = cairo_run_config.allow_missing_builtins.unwrap_or(false);
 
     // Init cairo runner.
