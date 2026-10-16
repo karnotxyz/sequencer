@@ -606,10 +606,10 @@ fn committed_data_reads_require_permission_across_execution_engines(runnable: Ru
                 info.check_native_execution(runnable.is_cairo_native());
                 assert!(
                     info.execution.gas_consumed
-                        >= crate::execution::syscalls::committed_data::COMMITTED_DATA_READ_GAS
+                        >= crate::execution::syscalls::committed_data::read_gas(tree.height())
                 );
                 for (builtin, minimum) in
-                    &crate::execution::syscalls::committed_data::read_os_resources()
+                    &crate::execution::syscalls::committed_data::read_os_resources(tree.height())
                         .builtin_instance_counter
                 {
                     assert!(
@@ -680,7 +680,7 @@ fn committed_data_disabled_or_unavailable_rejects_transaction_without_state_chan
     #[derive(Debug)]
     struct FailingProvider;
     impl CommittedDataProvider for FailingProvider {
-        fn value(&self, _: Felt, _: u32) -> Result<Option<Felt>, CommittedDataError> {
+        fn value(&self, _: Felt, _: u32) -> Result<Option<(Felt, usize)>, CommittedDataError> {
             Err(CommittedDataError::Provider("test provider unavailable".into()))
         }
     }

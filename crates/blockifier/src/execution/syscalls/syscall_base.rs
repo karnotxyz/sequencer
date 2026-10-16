@@ -96,14 +96,14 @@ pub struct SyscallHandlerBase<'state> {
 }
 
 impl<'state> SyscallHandlerBase<'state> {
-    pub fn account_committed_data_read(&mut self) {
-        let resources = super::committed_data::read_os_resources();
+    pub fn account_committed_data_read(&mut self, height: usize) {
+        let resources = super::committed_data::read_os_resources(height);
         if self.context.tracked_resource_stack.last()
             == Some(&crate::execution::contract_class::TrackedResource::CairoSteps)
         {
             self.context.subtract_steps(resources.n_steps);
         }
-        self.committed_data_resources += resources;
+        self.committed_data_resources += &resources;
     }
 
     pub fn new(

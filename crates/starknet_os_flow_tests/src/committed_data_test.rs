@@ -1,9 +1,9 @@
 use std::sync::Arc;
 
 use blockifier::execution::syscalls::committed_data::{
-    read_os_resources,
     CommittedDataWitness,
     CommittedDataWitnesses,
+    read_os_resources,
 };
 use blockifier::execution::syscalls::vm_syscall_utils::SyscallSelector;
 use blockifier::test_utils::dict_state_reader::DictStateReader;
@@ -17,9 +17,8 @@ use starknet_types_core::hash::{Poseidon, StarkHash};
 
 use crate::test_manager::{TestBuilder, TestRunner};
 
-fn witness(value: Felt) -> CommittedDataWitness {
-    let index = 499999_u32;
-    let siblings = std::array::from_fn(|i| Felt::from(i + 100));
+fn witness(value: Felt, index: u32, height: usize) -> CommittedDataWitness {
+    let siblings: Vec<_> = (0..height).map(|i| Felt::from(i + 100)).collect();
     let mut root = Poseidon::hash_array(&[
         Felt::from_hex_unchecked("0x434f4d4d49545445445f444154415f5631"),
         Felt::from(index),
@@ -44,7 +43,16 @@ async fn prepare() -> TestRunner<DictStateReader> {
     .await;
     assert_ne!(readers[0], readers[1]);
     builder.os_hints_config.full_output = true;
-    let witnesses = vec![witness(Felt::MAX), witness(Felt::from(54321_u32))];
+    let mut witnesses = vec![
+        witness(Felt::MAX, 499_999, 19),
+        witness(Felt::from(54_321_u32), 17_777, 15),
+        witness(Felt::from(42_u32), 0, 0),
+        witness(Felt::from(150_u32), 0, 15),
+        witness(Felt::from(190_u32), 0, 19),
+    ];
+    witnesses.extend(
+        (1..=19).map(|height| witness(Felt::from(1000 + height), (1_u32 << height) - 1, height)),
+    );
     builder.initial_state.block_context.use_committed_data = true;
     builder.os_hints_config.use_committed_data = true;
     builder.initial_state.block_context.committed_data_witnesses =
@@ -110,25 +118,34 @@ async fn committed_data_root_rotation_and_shared_reads_full_os_pie() {
     let trace = serde_json::to_value(&output.runner_output.txs_trace).unwrap();
     let mut measured_calls = Vec::new();
     collect_profiled_committed_data_calls(&trace, &mut measured_calls);
-    assert_eq!(measured_calls.len(), 4, "profile every committed-data read in the fixture");
-    let expected =
-        &get_const_syscall_resources(SyscallSelector::CallContract) + read_os_resources();
+    assert_eq!(measured_calls.len(), 48, "profile every committed-data read in the fixture");
+    let mut heights = Vec::new();
     for measured in measured_calls {
-        assert_eq!(
-            usize::try_from(measured["n_steps"].as_u64().unwrap()).unwrap(),
+        let poseidons =
+            measured["builtin_instance_counter"]["poseidon_builtin"].as_u64().unwrap() as usize;
+        let height = poseidons.checked_sub(2).unwrap();
+        let expected = &get_const_syscall_resources(SyscallSelector::CallContract)
+            + &read_os_resources(height);
+        heights.push(height);
+        let steps = usize::try_from(measured["n_steps"].as_u64().unwrap()).unwrap();
+        let range_checks = usize::try_from(
+            measured["builtin_instance_counter"]["range_check_builtin"].as_u64().unwrap(),
+        )
+        .unwrap();
+        assert!(
+            steps <= expected.n_steps,
+            "OS steps {steps} exceed bouncer bound {} at height {height}",
             expected.n_steps
+        );
+        assert!(
+            range_checks
+                <= expected.builtin_instance_counter
+                    [&cairo_vm::types::builtin_name::BuiltinName::range_check],
+            "OS range checks {range_checks} exceed bouncer bound at height {height}"
         );
         assert_eq!(
             usize::try_from(measured["n_memory_holes"].as_u64().unwrap()).unwrap(),
             expected.n_memory_holes
-        );
-        assert_eq!(
-            usize::try_from(
-                measured["builtin_instance_counter"]["range_check_builtin"].as_u64().unwrap()
-            )
-            .unwrap(),
-            expected.builtin_instance_counter
-                [&cairo_vm::types::builtin_name::BuiltinName::range_check]
         );
         assert_eq!(
             usize::try_from(
@@ -139,6 +156,11 @@ async fn committed_data_root_rotation_and_shared_reads_full_os_pie() {
                 [&cairo_vm::types::builtin_name::BuiltinName::poseidon]
         );
     }
+    heights.sort_unstable();
+    let mut expected_heights: Vec<_> = (0..=19).flat_map(|height| [height, height]).collect();
+    expected_heights.extend([15, 15, 15, 15, 19, 19, 19, 19]);
+    expected_heights.sort_unstable();
+    assert_eq!(heights, expected_heights);
     if let Some(path) = std::env::var_os("COMMITTED_DATA_POC_PIE_PATH") {
         output.runner_output.cairo_pie.write_zip_file(std::path::Path::new(&path), true).unwrap();
     }
@@ -161,7 +183,7 @@ async fn committed_data_optional_witnesses_do_not_change_ordinary_execution() {
         builder.os_hints_config.use_committed_data = enabled;
         // Neither execution permission nor unused private inputs may alter ordinary blocks.
         if include_unused_witness {
-            let witnesses = vec![witness(Felt::MAX)];
+            let witnesses = vec![witness(Felt::MAX, 0, 0)];
             builder.initial_state.block_context.committed_data_witnesses =
                 Arc::new(CommittedDataWitnesses::new(witnesses.clone()).unwrap());
             builder.os_hints_config.committed_data_witnesses = witnesses;

@@ -129,6 +129,7 @@ define_string_enum! {
         (CommittedDataIndex),
         (CommittedDataValue),
         (CommittedDataSiblings),
+        (CommittedDataHeight),
         (AccountDeploymentData),
         (AccountDeploymentDataSize),
         (ActualOutState),

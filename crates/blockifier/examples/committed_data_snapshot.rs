@@ -34,7 +34,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
     serde_json::to_writer(
         File::create(Path::new(&format!("{}.snapshot.json", args[2])))?,
-        &serde_json::json!({"root":tree.root(),"values":tree.values()}),
+        &serde_json::json!({"root":tree.root(),"values":tree.values(),"tree_height":tree.height()}),
     )?;
     serde_json::to_writer(
         File::create(Path::new(&format!("{}.witnesses.json", args[2])))?,
@@ -42,7 +42,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     )?;
     println!(
         "{}",
-        serde_json::json!({"root":tree.root(),"values_count":tree.values().len(),"witnesses":witnesses.len(),"build_ms":start.elapsed().as_millis()})
+        serde_json::json!({"root":tree.root(),"values_count":tree.values().len(),"tree_height":tree.height(),"witnesses":witnesses.len(),"build_ms":start.elapsed().as_millis()})
     );
     Ok(())
 }

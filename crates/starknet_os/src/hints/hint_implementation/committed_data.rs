@@ -30,5 +30,6 @@ pub(crate) fn load_committed_data_witness<S: StateReader>(
     ctx.vm.load_data(path, &values)?;
     ctx.insert_value(Ids::CommittedDataSiblings, path)?;
     ctx.insert_value(Ids::CommittedDataValue, witness.value)?;
+    ctx.insert_value(Ids::CommittedDataHeight, witness.siblings.len())?;
     Ok(())
 }

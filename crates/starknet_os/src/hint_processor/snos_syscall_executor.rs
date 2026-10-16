@@ -199,9 +199,9 @@ impl<S: StateReader> SyscallExecutor for SnosHintProcessor<'_, S> {
                 .committed_data_witness(request.calldata.0[0], request.calldata.0[1])
                 .ok_or_else(|| invalid("committed_data witness unavailable"))?;
             *remaining_gas = remaining_gas
-                .checked_sub(
-                    blockifier::execution::syscalls::committed_data::COMMITTED_DATA_READ_GAS,
-                )
+                .checked_sub(blockifier::execution::syscalls::committed_data::read_gas(
+                    witness.siblings.len(),
+                ))
                 .ok_or_else(|| invalid("insufficient committed_data gas"))?;
             // No synthetic ordinary inner call: the proved OS has a matching dedicated branch.
             // The committed_data branch constrains this response in place; ordinary calls instead

@@ -7,19 +7,36 @@ from starkware.cairo.common.math import assert_nn, unsigned_div_rem
 const COMMITTED_DATA_CONTRACT_ADDRESS = 0x6c5f4559c7041984537bc078c71443fdc58b2e1bab302b341ec12b3d2cec44;
 const COMMITTED_DATA_TREE_HEIGHT = 19;
 const COMMITTED_DATA_LEAF_DOMAIN = 'COMMITTED_DATA_V1';
-// Additional charge after CALL_CONTRACT_GAS_COST; total measured special-call cost is 124701.
-const COMMITTED_DATA_READ_GAS = 33141;
+// The ordinary CallContract entry is already charged. These bounded resources match Blockifier.
+const COMMITTED_DATA_STEP_BOUND_BASE = 400;
+const COMMITTED_DATA_STEP_BOUND_PER_LEVEL = 50;
+const COMMITTED_DATA_CALL_CONTRACT_STEPS = 903;
+const COMMITTED_DATA_RANGE_CHECK_BOUND_BASE = 20;
+const COMMITTED_DATA_RANGE_CHECK_BOUND_PER_LEVEL = 4;
+const COMMITTED_DATA_CALL_CONTRACT_RANGE_CHECKS = 18;
+const STEP_SIERRA_GAS = 100;
+const RANGE_CHECK_SIERRA_GAS = 70;
+const POSEIDON_SIERRA_GAS = 491;
+
+func committed_data_step_charge{range_check_ptr}(height: felt) -> (gas: felt) {
+    let bounded_steps = COMMITTED_DATA_STEP_BOUND_BASE + COMMITTED_DATA_STEP_BOUND_PER_LEVEL * height;
+    let needs_extra = is_le_felt(COMMITTED_DATA_CALL_CONTRACT_STEPS, bounded_steps);
+    if (needs_extra == 0) {
+        return (gas=0);
+    }
+    return (gas=(bounded_steps - COMMITTED_DATA_CALL_CONTRACT_STEPS) * STEP_SIERRA_GAS);
+}
 
 // Roots bind the indexed values independently of the contract reading them.
 // Root must come from authenticated, current contract state, never just from a witness hint.
 func verify_committed_data_value{range_check_ptr, poseidon_ptr: PoseidonBuiltin*}(
-    root: felt, index: felt, value: felt, siblings: felt*
+    root: felt, index: felt, value: felt, siblings: felt*, height: felt
 ) {
     alloc_locals;
     local leaf_data: felt* = new (COMMITTED_DATA_LEAF_DOMAIN, index, value);
     let (leaf) = poseidon_hash_many(n=3, elements=leaf_data);
     let (calculated_root) = committed_data_path(
-        node=leaf, index=index, siblings=siblings, remaining=COMMITTED_DATA_TREE_HEIGHT
+        node=leaf, index=index, siblings=siblings, remaining=height
     );
     assert calculated_root = root;
     return ();
@@ -74,16 +91,23 @@ func execute_committed_data_call{
         committed_data_failure(remaining_gas, ERROR_INVALID_ARGUMENT);
         return ();
     }
-    let gas_sufficient = is_le_felt(COMMITTED_DATA_READ_GAS, remaining_gas);
-    if (gas_sufficient == 0) {
-        committed_data_failure(remaining_gas, ERROR_OUT_OF_GAS);
-        return ();
-    }
     local committed_data_root = request.calldata_start[0];
     local committed_data_index = request.calldata_start[1];
     local committed_data_value;
     local committed_data_siblings: felt*;
+    local committed_data_height;
     %{ LoadCommittedDataWitness %}
+    let height_valid = is_le_felt(committed_data_height, COMMITTED_DATA_TREE_HEIGHT);
+    assert height_valid = 1;
+    let (step_charge) = committed_data_step_charge(committed_data_height);
+    let range_check_charge = (COMMITTED_DATA_RANGE_CHECK_BOUND_BASE + COMMITTED_DATA_RANGE_CHECK_BOUND_PER_LEVEL * committed_data_height - COMMITTED_DATA_CALL_CONTRACT_RANGE_CHECKS) * RANGE_CHECK_SIERRA_GAS;
+    let poseidon_charge = (committed_data_height + 2) * POSEIDON_SIERRA_GAS;
+    let committed_data_gas = step_charge + range_check_charge + poseidon_charge;
+    let gas_sufficient = is_le_felt(committed_data_gas, remaining_gas);
+    if (gas_sufficient == 0) {
+        committed_data_failure(remaining_gas, ERROR_OUT_OF_GAS);
+        return ();
+    }
     let selectable_builtins = &builtin_ptrs.selectable;
     let poseidon_ptr = selectable_builtins.poseidon;
     with poseidon_ptr {
@@ -92,6 +116,7 @@ func execute_committed_data_call{
             index=committed_data_index,
             value=committed_data_value,
             siblings=committed_data_siblings,
+            height=committed_data_height,
         );
     }
     tempvar builtin_ptrs = new BuiltinPointers(
@@ -109,9 +134,9 @@ func execute_committed_data_call{
         ),
         non_selectable=builtin_ptrs.non_selectable,
     );
-    assert_nn(remaining_gas - COMMITTED_DATA_READ_GAS);
+    assert_nn(remaining_gas - committed_data_gas);
     assert [cast(syscall_ptr, ResponseHeader*)] = ResponseHeader(
-        gas=remaining_gas - COMMITTED_DATA_READ_GAS, failure_flag=0
+        gas=remaining_gas - committed_data_gas, failure_flag=0
     );
     let response = cast(syscall_ptr + ResponseHeader.SIZE, CallContractResponse*);
     assert response.retdata_end = response.retdata_start + 1;
