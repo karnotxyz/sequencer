@@ -126,6 +126,10 @@ from starkware.starknet.core.os.execution.account_backward_compatibility import 
     is_v1_bound_account_cairo1,
     should_exclude_l1_data_gas,
 )
+from starkware.starknet.core.os.execution.committed_data import (
+    COMMITTED_DATA_CONTRACT_ADDRESS,
+    execute_committed_data_call,
+)
 from starkware.starknet.core.os.execution.deploy_contract import deploy_contract
 from starkware.starknet.core.os.execution.entry_point_utils import select_execute_entry_point_func
 from starkware.starknet.core.os.execution.execute_entry_point import ExecutionContext
@@ -176,10 +180,14 @@ func execute_call_contract{
     revert_log: RevertLogEntry*,
     outputs: OsCarriedOutputs*,
 }(block_context: BlockContext*, caller_execution_context: ExecutionContext*) {
-    let request = cast(syscall_ptr + RequestHeader.SIZE, CallContractRequest*);
+    alloc_locals;
+    local request: CallContractRequest* = cast(
+        syscall_ptr + RequestHeader.SIZE, CallContractRequest*
+    );
     let (success, remaining_gas) = reduce_syscall_base_gas(
         specific_base_gas_cost=CALL_CONTRACT_GAS_COST, request_struct_size=CallContractRequest.SIZE
     );
+    local remaining_gas = remaining_gas;
     if (success == FALSE) {
         // Not enough gas to execute the syscall.
         return ();
@@ -189,6 +197,14 @@ func execute_call_contract{
         return ();
     }
 
+    if (request.contract_address == COMMITTED_DATA_CONTRACT_ADDRESS) {
+        execute_committed_data_call(
+            request=request,
+            remaining_gas=remaining_gas,
+            use_committed_data=block_context.os_global_context.use_committed_data,
+        );
+        return ();
+    }
     tempvar contract_address = request.contract_address;
     let (state_entry: StateEntry*) = dict_read{dict_ptr=contract_state_changes}(
         key=contract_address

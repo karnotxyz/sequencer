@@ -1,3 +1,4 @@
+pub mod committed_data;
 pub mod common_syscall_logic;
 pub mod hint_processor;
 pub mod secp;

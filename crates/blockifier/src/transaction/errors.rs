@@ -71,6 +71,8 @@ pub enum TransactionFeeError {
 
 #[derive(Debug, Error)]
 pub enum TransactionExecutionError {
+    #[error("Committed-data availability failure: {0}")]
+    CommittedDataAvailability(crate::execution::syscalls::committed_data::CommittedDataError),
     #[error(
         "Declare transaction version {} must have a contract class of Cairo \
          version {cairo_version:?}.", **declare_version

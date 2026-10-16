@@ -12679,6 +12679,7 @@ dependencies = [
 name = "starknet_os_flow_tests"
 version = "0.18.0-rc.1"
 dependencies = [
+ "apollo_starknet_os_program",
  "assert_matches",
  "blockifier",
  "blockifier_test_utils",

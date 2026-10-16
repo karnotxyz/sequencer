@@ -9,6 +9,7 @@ from starkware.starknet.core.os.constants import (
     BLOCK_HASH_CONTRACT_ADDRESS,
     RESERVED_CONTRACT_ADDRESS,
 )
+from starkware.starknet.core.os.execution.committed_data import COMMITTED_DATA_CONTRACT_ADDRESS
 from starkware.starknet.core.os.execution.entry_point_utils import select_execute_entry_point_func
 from starkware.starknet.core.os.execution.execute_entry_point import ExecutionContext
 from starkware.starknet.core.os.execution.revert import (
@@ -47,6 +48,8 @@ func deploy_contract{
             contract_address - ALIAS_CONTRACT_ADDRESS
         ) * (contract_address - RESERVED_CONTRACT_ADDRESS),
     );
+
+    assert_not_zero(contract_address - COMMITTED_DATA_CONTRACT_ADDRESS);
 
     local state_entry: StateEntry*;
     %{ GetContractAddressStateEntry %}

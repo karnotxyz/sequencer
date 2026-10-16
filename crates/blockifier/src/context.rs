@@ -1,7 +1,7 @@
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
-use apollo_config::dumping::{prepend_sub_config_name, ser_param, SerializeConfig};
+use apollo_config::dumping::{SerializeConfig, prepend_sub_config_name, ser_param};
 use apollo_config::{ParamPath, ParamPrivacyInput, SerializedParam};
 use serde::{Deserialize, Serialize};
 use starknet_api::block::{BlockInfo, BlockNumber, BlockTimestamp, FeeType, GasPriceVector};
@@ -127,6 +127,11 @@ pub struct BlockContext {
     pub(crate) chain_info: ChainInfo,
     pub(crate) versioned_constants: VersionedConstants,
     pub bouncer_config: BouncerConfig,
+    /// Allows committed-data reads for this execution. False rejects reads; the address stays
+    /// reserved.
+    pub use_committed_data: bool,
+    pub committed_data_witnesses:
+        Arc<crate::execution::syscalls::committed_data::CommittedDataWitnesses>,
 }
 
 impl BlockContext {
@@ -136,7 +141,14 @@ impl BlockContext {
         versioned_constants: VersionedConstants,
         bouncer_config: BouncerConfig,
     ) -> Self {
-        BlockContext { block_info, chain_info, versioned_constants, bouncer_config }
+        BlockContext {
+            block_info,
+            chain_info,
+            versioned_constants,
+            bouncer_config,
+            use_committed_data: false,
+            committed_data_witnesses: Default::default(),
+        }
     }
 
     pub fn block_info(&self) -> &BlockInfo {
