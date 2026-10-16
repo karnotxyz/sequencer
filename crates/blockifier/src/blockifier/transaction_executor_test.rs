@@ -79,7 +79,7 @@ fn tx_executor_test_body<S: StateReader>(
     TransactionVersion::ZERO,
     CairoVersion::Cairo0,
     BouncerWeights {
-        state_diff_size: 0,
+        state_diff_size: 4, // Alias counter initialization and contract header.
         message_segment_length: 0,
         n_events: 0,
         ..BouncerWeights::empty()
@@ -89,7 +89,7 @@ fn tx_executor_test_body<S: StateReader>(
     TransactionVersion::ONE,
     CairoVersion::Cairo0,
     BouncerWeights {
-        state_diff_size: 2,
+        state_diff_size: 8, // Sender nonce plus its alias, counter, and alias contract header.
         message_segment_length: 0,
         n_events: 0,
         ..BouncerWeights::empty()
@@ -99,7 +99,7 @@ fn tx_executor_test_body<S: StateReader>(
     TransactionVersion::TWO,
     CairoVersion::Cairo1(RunnableCairo1::Casm),
     BouncerWeights {
-        state_diff_size: 4,
+        state_diff_size: 10,
         message_segment_length: 0,
         n_events: 0,
         ..BouncerWeights::empty()
@@ -109,7 +109,7 @@ fn tx_executor_test_body<S: StateReader>(
     TransactionVersion::THREE,
     CairoVersion::Cairo1(RunnableCairo1::Casm),
     BouncerWeights {
-        state_diff_size: 4,
+        state_diff_size: 10,
         message_segment_length: 0,
         n_events: 0,
         ..BouncerWeights::empty()
@@ -166,7 +166,7 @@ fn test_deploy_account(
     });
     let tx = AccountTransaction::new_for_sequencing(deploy_account_tx).into();
     let expected_bouncer_weights = BouncerWeights {
-        state_diff_size: 3,
+        state_diff_size: 9, // Deployment plus address alias, counter, and alias contract header.
         message_segment_length: 0,
         n_events: 0,
         ..BouncerWeights::empty()
@@ -182,7 +182,7 @@ fn test_deploy_account(
         felt!(3_u32)  // y.
     ],
     BouncerWeights {
-        state_diff_size: 2,
+        state_diff_size: 8,
         message_segment_length: 0,
         n_events: 0,
         ..BouncerWeights::empty()
@@ -196,7 +196,7 @@ fn test_deploy_account(
         felt!(0_u32)  // data length.
     ],
     BouncerWeights {
-        state_diff_size: 2,
+        state_diff_size: 8,
         message_segment_length: 0,
         n_events: 1,
         ..BouncerWeights::empty()
@@ -206,7 +206,7 @@ fn test_deploy_account(
     "test_count_actual_storage_changes",
     vec![],
     BouncerWeights {
-        state_diff_size: 6,
+        state_diff_size: 14, // Two modified contracts need address aliases.
         message_segment_length: 0,
         n_events: 0,
         ..BouncerWeights::empty()
@@ -252,7 +252,7 @@ fn test_l1_handler(block_context: BlockContext) {
         test_contract.get_instance_address(0),
     ));
     let expected_bouncer_weights = BouncerWeights {
-        state_diff_size: 4,
+        state_diff_size: 12, // Includes address/key aliases, the counter, and contract header.
         message_segment_length: 7,
         n_events: 0,
         ..BouncerWeights::empty()

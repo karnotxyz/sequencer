@@ -14,6 +14,7 @@ use starknet_api::core::{ClassHash, CompiledClassHash};
 use starknet_api::execution_resources::GasAmount;
 use starknet_api::transaction::fields::Fee;
 use starknet_api::{class_hash, contract_address, felt, storage_key};
+use starknet_types_core::felt::Felt;
 
 use super::BouncerConfig;
 use crate::blockifier::transaction_executor::TransactionExecutorError;
@@ -40,7 +41,13 @@ use crate::execution::call_info::{
 use crate::fee::resources::{ComputationResources, TransactionResources};
 use crate::metrics::{BLOCKS_FULL_BY_RESOURCE, LABEL_NAME_BLOCK_FULL_RESOURCE};
 use crate::state::cached_state::{CachedState, StateChangesKeys, StateMaps, TransactionalState};
-use crate::state::state_api::StateReader;
+use crate::state::errors::StateError;
+use crate::state::state_api::{MockStateReader, State, StateReader};
+use crate::state::stateful_compression::{
+    allocate_aliases_in_storage,
+    ALIAS_COUNTER_STORAGE_KEY,
+    INITIAL_AVAILABLE_ALIAS,
+};
 use crate::test_utils::contracts::FeatureContractData;
 use crate::test_utils::dict_state_reader::DictStateReader;
 use crate::test_utils::initial_test_state::test_state;
@@ -55,6 +62,207 @@ use crate::utils::{add_maps, u64_from_usize};
 #[fixture]
 fn block_context() -> BlockContext {
     BlockContext::create_for_account_testing()
+}
+
+#[rstest]
+fn test_bouncer_reserves_aliases_before_admission(mut block_context: BlockContext) {
+    block_context.versioned_constants.enable_stateful_compression = true;
+    let alias_address = block_context
+        .versioned_constants
+        .os_constants
+        .os_contract_addresses
+        .alias_contract_address();
+    let mut state = CachedState::new(DictStateReader {
+        storage_view: HashMap::from([(
+            (alias_address, ALIAS_COUNTER_STORAGE_KEY),
+            INITIAL_AVAILABLE_ALIAS,
+        )]),
+        ..Default::default()
+    });
+    let mut config = BouncerConfig::max();
+    config.block_max_capacity.state_diff_size = 20;
+    let mut bouncer = Bouncer::new(config);
+
+    // The third transaction reuses aliases reserved by the first two: aliases share one namespace
+    // across contracts and across addresses/storage keys. Repeated writes cost nothing extra.
+    for (address, key, expected_size) in
+        [(0x200_u16, 0x300_u16, 12), (0x200, 0x301, 16), (0x301, 0x300, 20), (0x200, 0x300, 20)]
+    {
+        let changes = StateMaps {
+            storage: HashMap::from([((address.into(), key.into()), Felt::ONE)]),
+            ..Default::default()
+        };
+        bouncer
+            .try_update(
+                &state,
+                &changes.keys(),
+                &ExecutionSummary::default(),
+                &CairoPrimitiveCounterMap::default(),
+                &TransactionResources::default(),
+                &block_context.versioned_constants,
+                GasAmount::ZERO,
+            )
+            .unwrap();
+        state.set_storage_at(address.into(), key.into(), Felt::ONE).unwrap();
+        assert_eq!(bouncer.get_bouncer_weights().state_diff_size, expected_size);
+        assert_eq!(state.get_storage_at(alias_address, key.into()).unwrap(), Felt::ZERO);
+    }
+
+    let changes = StateMaps {
+        storage: HashMap::from([(
+            (contract_address!(0x200_u16), storage_key!(0x400_u16)),
+            Felt::ONE,
+        )]),
+        ..Default::default()
+    };
+    // Application storage alone would fit at 22 words, but the new alias requires another two.
+    bouncer.bouncer_config.block_max_capacity.state_diff_size = 22;
+    let weights_before = *bouncer.get_bouncer_weights();
+    let keys_before = bouncer.state_changes_keys.clone();
+    let result = bouncer.try_update(
+        &state,
+        &changes.keys(),
+        &ExecutionSummary::default(),
+        &CairoPrimitiveCounterMap::default(),
+        &TransactionResources::default(),
+        &block_context.versioned_constants,
+        GasAmount::ZERO,
+    );
+    assert_matches!(result, Err(TransactionExecutorError::BlockFull));
+    assert_eq!(*bouncer.get_bouncer_weights(), weights_before);
+    assert_eq!(bouncer.state_changes_keys, keys_before);
+
+    bouncer.bouncer_config.block_max_capacity.state_diff_size = 24;
+    bouncer
+        .try_update(
+            &state,
+            &changes.keys(),
+            &ExecutionSummary::default(),
+            &CairoPrimitiveCounterMap::default(),
+            &TransactionResources::default(),
+            &block_context.versioned_constants,
+            GasAmount::ZERO,
+        )
+        .unwrap();
+    state.set_storage_at(contract_address!(0x200_u16), storage_key!(0x400_u16), Felt::ONE).unwrap();
+    allocate_aliases_in_storage(&mut state, alias_address).unwrap();
+    let finalized_keys = state.to_state_diff().unwrap().state_maps.keys();
+    assert_eq!(bouncer.state_changes_keys, finalized_keys);
+    assert_eq!(bouncer.get_bouncer_weights().state_diff_size, 24);
+    assert_eq!(
+        bouncer.get_bouncer_weights().state_diff_size,
+        crate::fee::gas_usage::get_onchain_data_segment_length(&finalized_keys.count()),
+    );
+
+    // In the next block these aliases already exist: the same application write costs four words,
+    // with no alias writes or counter update. This is the ordinary repeated-oracle-update case.
+    let mut config = BouncerConfig::max();
+    config.block_max_capacity.state_diff_size = 4;
+    let mut next_bouncer = Bouncer::new(config);
+    next_bouncer
+        .try_update(
+            &state,
+            &changes.keys(),
+            &ExecutionSummary::default(),
+            &CairoPrimitiveCounterMap::default(),
+            &TransactionResources::default(),
+            &block_context.versioned_constants,
+            GasAmount::ZERO,
+        )
+        .unwrap();
+    assert_eq!(next_bouncer.get_bouncer_weights().state_diff_size, 4);
+    assert_eq!(next_bouncer.state_changes_keys, changes.keys());
+}
+
+#[rstest]
+fn test_transaction_too_large_includes_aliases(mut block_context: BlockContext) {
+    block_context.versioned_constants.enable_stateful_compression = true;
+    let changes = StateMaps {
+        storage: HashMap::from([(
+            (contract_address!(0x200_u16), storage_key!(0x300_u16)),
+            Felt::ONE,
+        )]),
+        ..Default::default()
+    };
+    let mut config = BouncerConfig::max();
+    config.block_max_capacity.state_diff_size = 11;
+    let result = verify_tx_weights_within_max_capacity(
+        &DictStateReader::default(),
+        &ExecutionSummary::default(),
+        &CairoPrimitiveCounterMap::default(),
+        &TransactionResources::default(),
+        &changes.keys(),
+        &config,
+        &block_context.versioned_constants,
+        GasAmount::ZERO,
+    );
+    assert_matches!(result, Err(TransactionExecutionError::TransactionTooLarge { tx_size, .. })
+        if tx_size.state_diff_size == 12);
+}
+
+#[rstest]
+fn test_bouncer_without_compression_does_not_read_aliases(mut block_context: BlockContext) {
+    block_context.versioned_constants.enable_stateful_compression = false;
+    let state = MockStateReader::new();
+    let changes = StateMaps {
+        storage: HashMap::from([(
+            (contract_address!(0x200_u16), storage_key!(0x300_u16)),
+            Felt::ONE,
+        )]),
+        ..Default::default()
+    };
+    let mut config = BouncerConfig::max();
+    config.block_max_capacity.state_diff_size = 4;
+    let mut bouncer = Bouncer::new(config.clone());
+    bouncer
+        .try_update(
+            &state,
+            &changes.keys(),
+            &ExecutionSummary::default(),
+            &CairoPrimitiveCounterMap::default(),
+            &TransactionResources::default(),
+            &block_context.versioned_constants,
+            GasAmount::ZERO,
+        )
+        .unwrap();
+    assert_eq!(bouncer.get_bouncer_weights().state_diff_size, 4);
+    verify_tx_weights_within_max_capacity(
+        &state,
+        &ExecutionSummary::default(),
+        &CairoPrimitiveCounterMap::default(),
+        &TransactionResources::default(),
+        &changes.keys(),
+        &config,
+        &block_context.versioned_constants,
+        GasAmount::ZERO,
+    )
+    .unwrap();
+}
+
+#[rstest]
+fn test_bouncer_alias_read_failure_does_not_reserve_capacity(mut block_context: BlockContext) {
+    block_context.versioned_constants.enable_stateful_compression = true;
+    let mut state = MockStateReader::new();
+    state
+        .expect_get_storage_at()
+        .times(1)
+        .returning(|_, _| Err(StateError::StateReadError("alias storage unavailable".to_string())));
+    let mut bouncer = Bouncer::new(BouncerConfig::max());
+    let result = bouncer.try_update(
+        &state,
+        &StateChangesKeys::default(),
+        &ExecutionSummary::default(),
+        &CairoPrimitiveCounterMap::default(),
+        &TransactionResources::default(),
+        &block_context.versioned_constants,
+        GasAmount::ZERO,
+    );
+    assert_matches!(
+        result,
+        Err(TransactionExecutorError::StateError(StateError::StateReadError(_)))
+    );
+    assert_eq!(*bouncer.get_bouncer_weights(), BouncerWeights::empty());
+    assert_eq!(bouncer.state_changes_keys, StateChangesKeys::default());
 }
 
 #[fixture]
@@ -512,6 +720,8 @@ fn test_transaction_too_large_sierra_gas_based(block_context: BlockContext) {
     .map_err(TransactionExecutorError::TransactionExecutionError);
 
     let expected_weights = BouncerWeights {
+        // Finalization initializes the alias counter in this empty state.
+        state_diff_size: 4,
         sierra_gas: exceeding_gas,
         n_txs: 1,
         proving_gas: exceeding_gas,
@@ -584,7 +794,7 @@ fn test_bouncer_try_update_n_txs(
             l1_gas: 10,
             message_segment_length: 10,
             n_events: 10,
-            state_diff_size: 14,
+            state_diff_size: 18,
             sierra_gas: GasAmount(
                 406810,
             ),

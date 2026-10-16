@@ -6,7 +6,13 @@ use starknet_api::StarknetApiError;
 use starknet_types_core::felt::Felt;
 use thiserror::Error;
 
-use super::cached_state::{CachedState, CommitmentStateDiff, StateMaps, StorageEntry};
+use super::cached_state::{
+    CachedState,
+    CommitmentStateDiff,
+    StateChangesKeys,
+    StateMaps,
+    StorageEntry,
+};
 use super::errors::StateError;
 use super::state_api::{State, StateReader, StateResult};
 
@@ -102,6 +108,43 @@ pub fn predicted_alias_storage_entries(
         }
     }
     entries
+}
+
+/// Predicts alias writes without allocating aliases or changing their canonical allocation order.
+/// The input may contain only marginal changes; callers must deduplicate the result against writes
+/// already reserved for the block, since those aliases are not stored until finalization.
+pub(crate) fn predicted_alias_state_changes<S: StateReader>(
+    state: &S,
+    state_changes: &StateChangesKeys,
+    alias_contract_address: ContractAddress,
+) -> StateResult<StateChangesKeys> {
+    let mut alias_keys: HashSet<StorageKey> = state_changes
+        .modified_contracts
+        .iter()
+        .filter(|address| should_compress_address(address))
+        .map(|address| StorageKey(address.0))
+        .collect();
+    alias_keys.extend(
+        state_changes
+            .storage_keys
+            .iter()
+            .filter_map(|(address, key)| should_compress_storage_key(key, address).then_some(*key)),
+    );
+
+    let mut alias_changes = StateChangesKeys::default();
+    for key in alias_keys {
+        if state.get_storage_at(alias_contract_address, key)? == Felt::ZERO {
+            alias_changes.storage_keys.insert((alias_contract_address, key));
+        }
+    }
+    // Finalization also initializes an absent counter, even when no aliases are allocated.
+    if !alias_changes.storage_keys.is_empty()
+        || state.get_storage_at(alias_contract_address, ALIAS_COUNTER_STORAGE_KEY)? == Felt::ZERO
+    {
+        alias_changes.storage_keys.insert((alias_contract_address, ALIAS_COUNTER_STORAGE_KEY));
+        alias_changes.modified_contracts.insert(alias_contract_address);
+    }
+    Ok(alias_changes)
 }
 
 /// Updates the alias contract with the new keys.

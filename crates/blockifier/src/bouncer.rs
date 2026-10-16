@@ -25,6 +25,7 @@ use crate::fee::resources::TransactionResources;
 use crate::metrics::record_exceeded_bouncer_resources;
 use crate::state::cached_state::{StateChangesKeys, StorageEntry};
 use crate::state::state_api::StateReader;
+use crate::state::stateful_compression::predicted_alias_state_changes;
 use crate::transaction::errors::TransactionExecutionError;
 use crate::transaction::objects::{ExecutionResourcesTraits, TransactionExecutionResult};
 use crate::utils::{add_maps, should_migrate, u64_from_usize, usize_from_u64};
@@ -427,6 +428,7 @@ pub struct Bouncer {
     // Additional info; maintained and used to calculate the residual contribution of a transaction
     // to the accumulated weights.
     pub visited_storage_entries: HashSet<StorageEntry>,
+    // Includes alias writes reserved for block finalization.
     pub state_changes_keys: StateChangesKeys,
     pub bouncer_config: BouncerConfig,
     accumulated_weights: TxWeights,
@@ -494,7 +496,7 @@ impl Bouncer {
     ) -> TransactionExecutorResult<()> {
         // The countings here should be linear in the transactional state changes and execution info
         // rather than the cumulative state attributes.
-        let marginal_state_changes_keys =
+        let mut marginal_state_changes_keys =
             tx_state_changes_keys.difference(&self.state_changes_keys);
         let marginal_executed_class_hashes = tx_execution_summary
             .executed_class_hashes
@@ -505,7 +507,7 @@ impl Bouncer {
             .visited_storage_entries
             .difference(&self.visited_storage_entries)
             .count();
-        let tx_weights = get_tx_weights(
+        let mut tx_weights = get_tx_weights(
             state_reader,
             &marginal_executed_class_hashes,
             n_marginal_visited_storage_entries,
@@ -516,6 +518,21 @@ impl Bouncer {
             &self.bouncer_config,
             receipt_l2_gas,
         )?;
+
+        if versioned_constants.enable_stateful_compression {
+            let alias_changes = predicted_alias_state_changes(
+                state_reader,
+                &marginal_state_changes_keys,
+                versioned_constants.os_constants.os_contract_addresses.alias_contract_address(),
+            )?
+            .difference(&self.state_changes_keys)
+            .difference(&marginal_state_changes_keys);
+            // Reserve finalization writes before admission. Keep Patricia gas accounting separate
+            // from the state-diff budget; get_tx_weights currently excludes alias tree work.
+            tx_weights.bouncer_weights.state_diff_size +=
+                get_onchain_data_segment_length(&alias_changes.count());
+            marginal_state_changes_keys.extend(&alias_changes);
+        }
 
         let tx_bouncer_weights = tx_weights.bouncer_weights;
 
@@ -575,8 +592,8 @@ impl Bouncer {
             .casm_hash_computation_data_proving_gas
             .extend(tx_weights.casm_hash_computation_data_proving_gas);
         self.visited_storage_entries.extend(&tx_execution_summary.visited_storage_entries);
-        // Note: cancelling writes (0 -> 1 -> 0) will not be removed, but it's fine since fee was
-        // charged for them.
+        // Keep cancelling writes (0 -> 1 -> 0), including their reserved aliases, as a conservative
+        // upper bound on the final state diff.
         // Also, `get_patricia_update_resources` relies on this property - each cell must
         // be counted at most once as modified.
         self.state_changes_keys.extend(state_changes_keys);
@@ -944,7 +961,7 @@ pub fn verify_tx_weights_within_max_capacity<S: StateReader>(
     versioned_constants: &VersionedConstants,
     receipt_l2_gas: GasAmount,
 ) -> TransactionExecutionResult<()> {
-    let tx_weights = get_tx_weights(
+    let mut tx_weights = get_tx_weights(
         state_reader,
         &tx_execution_summary.executed_class_hashes,
         tx_execution_summary.visited_storage_entries.len(),
@@ -956,6 +973,16 @@ pub fn verify_tx_weights_within_max_capacity<S: StateReader>(
         receipt_l2_gas,
     )?
     .bouncer_weights;
+
+    if versioned_constants.enable_stateful_compression {
+        let alias_changes = predicted_alias_state_changes(
+            state_reader,
+            tx_state_changes_keys,
+            versioned_constants.os_constants.os_contract_addresses.alias_contract_address(),
+        )?
+        .difference(tx_state_changes_keys);
+        tx_weights.state_diff_size += get_onchain_data_segment_length(&alias_changes.count());
+    }
 
     bouncer_config.within_max_capacity_or_err(tx_weights)
 }
