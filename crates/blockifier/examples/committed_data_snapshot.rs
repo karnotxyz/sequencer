@@ -1,6 +1,6 @@
 //! Build a complete committed_data tree and export only the witnesses requested for replay.
 //! Usage: committed_data_snapshot input.json output-prefix
-//! Input: {"values":["123",...],"indices":[0,17,...]}.
+//! Input: {"entries":[["0x425443","0x7b"]],"keys":["0x425443"]}.
 use std::fs::File;
 use std::path::Path;
 
@@ -11,8 +11,8 @@ use starknet_types_core::felt::Felt;
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Input {
-    values: Vec<Felt>,
-    indices: Vec<u32>,
+    entries: Vec<(Felt, Felt)>,
+    keys: Vec<Felt>,
 }
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args: Vec<_> = std::env::args().collect();
@@ -21,11 +21,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
     let input: Input = serde_json::from_reader(File::open(&args[1])?)?;
     let start = std::time::Instant::now();
-    let tree = CommittedDataSet::new(input.values)?;
+    let tree = CommittedDataSet::new(input.entries)?;
     let witnesses = input
-        .indices
+        .keys
         .iter()
-        .map(|index| tree.witness(*index).ok_or("Asset outside snapshot"))
+        .map(|key| tree.witness(*key).ok_or("Key absent from dataset"))
         .collect::<Result<Vec<_>, _>>()?;
     for witness in &witnesses {
         if !witness.verify() {
@@ -34,7 +34,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
     serde_json::to_writer(
         File::create(Path::new(&format!("{}.snapshot.json", args[2])))?,
-        &serde_json::json!({"root":tree.root(),"values":tree.values(),"tree_height":tree.height()}),
+        &serde_json::json!({"root":tree.root(),"entries":tree.entries()}),
     )?;
     serde_json::to_writer(
         File::create(Path::new(&format!("{}.witnesses.json", args[2])))?,
@@ -42,7 +42,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     )?;
     println!(
         "{}",
-        serde_json::json!({"root":tree.root(),"values_count":tree.values().len(),"tree_height":tree.height(),"witnesses":witnesses.len(),"build_ms":start.elapsed().as_millis()})
+        serde_json::json!({"root":tree.root(),"entry_count":tree.entries().len(),"witnesses":witnesses.len(),"build_ms":start.elapsed().as_millis()})
     );
     Ok(())
 }

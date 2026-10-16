@@ -167,7 +167,7 @@ impl<'a, S: StateReader> SnosHintProcessor<'a, S> {
         }
         let mut committed_data_index = HashMap::with_capacity(witnesses.len());
         for (offset, witness) in witnesses.iter().enumerate() {
-            let key = (witness.root, Felt::from(witness.index));
+            let key = (witness.root, witness.key);
             if committed_data_index.insert(key, offset).is_some() {
                 return Err(OsInputError::CommittedData("Duplicate witness".into()).into());
             }

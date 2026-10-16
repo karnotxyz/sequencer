@@ -13,25 +13,32 @@ use blockifier_test_utils::calldata::create_calldata;
 use blockifier_test_utils::contracts::FeatureContract;
 use starknet_api::{calldata, invoke_tx_args};
 use starknet_types_core::felt::Felt;
-use starknet_types_core::hash::{Poseidon, StarkHash};
 
 use crate::test_manager::{TestBuilder, TestRunner};
 
 fn witness(value: Felt, index: u32, height: usize) -> CommittedDataWitness {
-    let siblings: Vec<_> = (0..height).map(|i| Felt::from(i + 100)).collect();
-    let mut root = Poseidon::hash_array(&[
-        Felt::from_hex_unchecked("0x434f4d4d49545445445f444154415f5631"),
-        Felt::from(index),
-        value,
-    ]);
-    for (depth, sibling) in siblings.iter().enumerate() {
-        root = if (index >> depth) & 1 == 0 {
-            Poseidon::hash(&root, sibling)
+    witness_for_key(value, Felt::from(index), height)
+}
+
+fn witness_for_key(value: Felt, key: Felt, height: usize) -> CommittedDataWitness {
+    use blockifier::execution::syscalls::committed_data::{
+        CommittedDataSibling,
+        branch,
+        key_bit,
+        leaf,
+    };
+    let siblings: Vec<_> = (0..height)
+        .map(|i| CommittedDataSibling { bit: i as u8, hash: Felt::from(i + 100) })
+        .collect();
+    let mut root = leaf(key, value);
+    for step in &siblings {
+        root = if key_bit(key, step.bit) {
+            branch(step.bit, step.hash, root)
         } else {
-            Poseidon::hash(sibling, &root)
+            branch(step.bit, root, step.hash)
         };
     }
-    CommittedDataWitness { root, index, value, siblings }
+    CommittedDataWitness { root, key, value, siblings }
 }
 
 async fn prepare() -> TestRunner<DictStateReader> {
@@ -53,6 +60,10 @@ async fn prepare() -> TestRunner<DictStateReader> {
     witnesses.extend(
         (1..=19).map(|height| witness(Felt::from(1000 + height), (1_u32 << height) - 1, height)),
     );
+    witnesses.extend(
+        [31, 64, 127, 128, 251, 252].map(|height| witness(Felt::from(2000 + height), 0, height)),
+    );
+    witnesses.push(witness_for_key(Felt::ZERO, Felt::MAX, 252));
     builder.initial_state.block_context.use_committed_data = true;
     builder.os_hints_config.use_committed_data = true;
     builder.initial_state.block_context.committed_data_witnesses =
@@ -64,11 +75,7 @@ async fn prepare() -> TestRunner<DictStateReader> {
         for reader in readers {
             let calldata = create_calldata(reader, "test_storage_write", &[Felt::from(45), w.root]);
             builder.add_funded_account_invoke(invoke_tx_args! { calldata });
-            let calldata = create_calldata(
-                reader,
-                "test_committed_data_read",
-                &[Felt::from(w.index), w.value],
-            );
+            let calldata = create_calldata(reader, "test_committed_data_read", &[w.key, w.value]);
             builder.add_funded_account_invoke(invoke_tx_args! { calldata });
         }
     }
@@ -118,12 +125,15 @@ async fn committed_data_root_rotation_and_shared_reads_full_os_pie() {
     let trace = serde_json::to_value(&output.runner_output.txs_trace).unwrap();
     let mut measured_calls = Vec::new();
     collect_profiled_committed_data_calls(&trace, &mut measured_calls);
-    assert_eq!(measured_calls.len(), 48, "profile every committed-data read in the fixture");
+    assert_eq!(measured_calls.len(), 62, "profile every committed-data read in the fixture");
+    if let Some(path) = std::env::var_os("COMMITTED_DATA_RESOURCE_REPORT") {
+        std::fs::write(path, serde_json::to_vec_pretty(&measured_calls).unwrap()).unwrap();
+    }
     let mut heights = Vec::new();
     for measured in measured_calls {
         let poseidons =
             measured["builtin_instance_counter"]["poseidon_builtin"].as_u64().unwrap() as usize;
-        let height = poseidons.checked_sub(2).unwrap();
+        let height = poseidons.checked_sub(2).unwrap() / 2;
         let expected = &get_const_syscall_resources(SyscallSelector::CallContract)
             + &read_os_resources(height);
         heights.push(height);
@@ -159,6 +169,8 @@ async fn committed_data_root_rotation_and_shared_reads_full_os_pie() {
     heights.sort_unstable();
     let mut expected_heights: Vec<_> = (0..=19).flat_map(|height| [height, height]).collect();
     expected_heights.extend([15, 15, 15, 15, 19, 19, 19, 19]);
+    expected_heights.extend([31, 64, 127, 128, 251, 252].into_iter().flat_map(|h| [h, h]));
+    expected_heights.extend([252, 252]);
     expected_heights.sort_unstable();
     assert_eq!(heights, expected_heights);
     if let Some(path) = std::env::var_os("COMMITTED_DATA_POC_PIE_PATH") {
@@ -205,7 +217,7 @@ async fn committed_data_optional_witnesses_do_not_change_ordinary_execution() {
 async fn committed_data_bad_witness_fails_inside_os() {
     let mut runner = prepare().await;
     // Execution already succeeded with a valid host cache. Corrupt only SNOS's private hint input.
-    runner.os_hints.os_hints_config.committed_data_witnesses[1].siblings[0] += Felt::ONE;
+    runner.os_hints.os_hints_config.committed_data_witnesses[1].siblings[0].hash += Felt::ONE;
     let error = starknet_os::runner::run_os_stateless(
         starknet_os::runner::DEFAULT_OS_LAYOUT,
         runner.os_hints,
@@ -228,16 +240,18 @@ async fn committed_data_full_500k_snapshot_os_pie() {
     let started = std::time::Instant::now();
     for epoch in 0..2_u128 {
         let tree = CommittedDataSet::new(
-            (0..500_000_u128).map(|index| Felt::from(100_000_000 + index * 100 + epoch)).collect(),
+            (0..500_000_u128)
+                .map(|index| (Felt::from(index), Felt::from(100_000_000 + index * 100 + epoch)))
+                .collect(),
         )
         .unwrap();
         let root = tree.root();
         eprintln!("500k epoch {epoch}: root={root:#x}, elapsed={:?}", started.elapsed());
-        assert!(tree.witness(500_000).is_none());
+        assert!(tree.witness(Felt::from(500_000_u32)).is_none());
         let calldata = create_calldata(reader, "test_storage_write", &[Felt::from(45), root]);
         builder.add_funded_account_invoke(invoke_tx_args! { calldata });
         for index in [0_u32, 17, 249999, 499999] {
-            let w = tree.witness(index).unwrap();
+            let w = tree.witness(Felt::from(index)).unwrap();
             assert!(w.verify());
             let calldata =
                 create_calldata(reader, "test_committed_data_read", &[Felt::from(index), w.value]);
@@ -323,10 +337,7 @@ async fn committed_data_full_os_output_aggregates_with_standard_config_hash() {
 
 #[tokio::test]
 async fn committed_data_invalid_requests_produce_provable_reverts_without_witnesses() {
-    use blockifier::execution::syscalls::committed_data::{
-        COMMITTED_DATA_ADDRESS,
-        MAX_COMMITTED_DATA_VALUES,
-    };
+    use blockifier::execution::syscalls::committed_data::COMMITTED_DATA_ADDRESS;
     use starknet_api::abi::abi_utils::selector_from_name;
     let contract = FeatureContract::TestContract(CairoVersion::Cairo1(RunnableCairo1::Casm));
     let (mut builder, [reader]) =
@@ -336,10 +347,6 @@ async fn committed_data_invalid_requests_produce_provable_reverts_without_witnes
     for (selector, args) in [
         (Felt::ZERO, vec![Felt::ZERO, Felt::ZERO]),
         (selector_from_name("get_value").0, vec![Felt::ZERO]),
-        (
-            selector_from_name("get_value").0,
-            vec![Felt::ZERO, Felt::from(MAX_COMMITTED_DATA_VALUES)],
-        ),
     ] {
         let mut raw = vec![COMMITTED_DATA_ADDRESS, selector, Felt::from(args.len())];
         raw.extend(args);

@@ -582,7 +582,8 @@ fn committed_data_reads_require_permission_across_execution_engines(runnable: Ru
     use crate::state::state_api::State;
 
     let contract = FeatureContract::TestContract(CairoVersion::Cairo1(runnable));
-    let tree = CommittedDataSet::new(vec![Felt::MAX]).unwrap();
+    let tree =
+        CommittedDataSet::new(vec![(Felt::ZERO, Felt::ZERO), (Felt::MAX, Felt::MAX)]).unwrap();
     for use_committed_data in [false, true] {
         for instance in 0..2 {
             let address = contract.get_instance_address(instance);
@@ -590,11 +591,12 @@ fn committed_data_reads_require_permission_across_execution_engines(runnable: Ru
             state.set_storage_at(address, StorageKey::from(45_u32), tree.root()).unwrap();
             let mut context = BlockContext::create_for_testing();
             context.use_committed_data = use_committed_data;
-            context.committed_data_witnesses =
-                Arc::new(CommittedDataWitnesses::new(vec![tree.witness(0).unwrap()]).unwrap());
+            context.committed_data_witnesses = Arc::new(
+                CommittedDataWitnesses::new(vec![tree.witness(Felt::MAX).unwrap()]).unwrap(),
+            );
             let call = CallEntryPoint {
                 entry_point_selector: selector_from_name("test_committed_data_read"),
-                calldata: calldata_macro![Felt::ZERO, Felt::MAX],
+                calldata: calldata_macro![Felt::MAX, Felt::MAX],
                 storage_address: address,
                 code_address: Some(address),
                 ..trivial_external_entry_point_new(contract)
@@ -606,10 +608,10 @@ fn committed_data_reads_require_permission_across_execution_engines(runnable: Ru
                 info.check_native_execution(runnable.is_cairo_native());
                 assert!(
                     info.execution.gas_consumed
-                        >= crate::execution::syscalls::committed_data::read_gas(tree.height())
+                        >= crate::execution::syscalls::committed_data::read_gas(1)
                 );
                 for (builtin, minimum) in
-                    &crate::execution::syscalls::committed_data::read_os_resources(tree.height())
+                    &crate::execution::syscalls::committed_data::read_os_resources(1)
                         .builtin_instance_counter
                 {
                     assert!(
@@ -680,7 +682,7 @@ fn committed_data_disabled_or_unavailable_rejects_transaction_without_state_chan
     #[derive(Debug)]
     struct FailingProvider;
     impl CommittedDataProvider for FailingProvider {
-        fn value(&self, _: Felt, _: u32) -> Result<Option<(Felt, usize)>, CommittedDataError> {
+        fn value(&self, _: Felt, _: Felt) -> Result<Option<(Felt, usize)>, CommittedDataError> {
             Err(CommittedDataError::Provider("test provider unavailable".into()))
         }
     }
@@ -700,11 +702,12 @@ fn committed_data_disabled_or_unavailable_rejects_transaction_without_state_chan
         }
         let data = create_test_init_data(&block_context.chain_info, CairoVersion::Cairo1(runnable));
         let mut state = data.state;
-        let tree = CommittedDataSet::new(vec![Felt::MAX]).unwrap();
+        let tree = CommittedDataSet::new(vec![(Felt::ZERO, Felt::MAX)]).unwrap();
         if !enabled {
             // Even a valid witness must not permit a disabled read.
-            block_context.committed_data_witnesses =
-                Arc::new(CommittedDataWitnesses::new(vec![tree.witness(0).unwrap()]).unwrap());
+            block_context.committed_data_witnesses = Arc::new(
+                CommittedDataWitnesses::new(vec![tree.witness(Felt::ZERO).unwrap()]).unwrap(),
+            );
         }
         state.set_storage_at(data.contract_address, StorageKey::from(45_u32), tree.root()).unwrap();
         let before = state.to_state_diff().unwrap();

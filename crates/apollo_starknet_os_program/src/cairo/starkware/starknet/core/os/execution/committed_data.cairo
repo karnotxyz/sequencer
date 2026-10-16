@@ -1,25 +1,28 @@
 // Experimental protocol extension. Not enabled on upstream Starknet.
-from starkware.cairo.common.builtin_poseidon.poseidon import poseidon_hash, poseidon_hash_many
+from starkware.cairo.common.builtin_poseidon.poseidon import poseidon_hash_many
 from starkware.cairo.common.cairo_builtins import PoseidonBuiltin
-from starkware.cairo.common.math import assert_nn, unsigned_div_rem
+from starkware.cairo.common.math import assert_nn, unsigned_div_rem, split_felt
 
 // starknet_keccak("committed_data_v1"), matching the VM/Native protocol reservation.
 const COMMITTED_DATA_CONTRACT_ADDRESS = 0x6c5f4559c7041984537bc078c71443fdc58b2e1bab302b341ec12b3d2cec44;
-const COMMITTED_DATA_TREE_HEIGHT = 19;
-const COMMITTED_DATA_LEAF_DOMAIN = 'COMMITTED_DATA_V1';
+const COMMITTED_DATA_TREE_HEIGHT = 252;
+const COMMITTED_DATA_LEAF_DOMAIN = 'CD_MPT_LEAF_V1';
+const COMMITTED_DATA_BRANCH_DOMAIN = 'CD_MPT_BRANCH_V1';
+from starkware.cairo.common.pow import pow
 // The ordinary CallContract entry is already charged. These bounded resources match Blockifier.
-const COMMITTED_DATA_STEP_BOUND_BASE = 400;
-const COMMITTED_DATA_STEP_BOUND_PER_LEVEL = 50;
+const COMMITTED_DATA_STEP_BOUND_BASE = 600;
+const COMMITTED_DATA_STEP_BOUND_PER_LEVEL = 400;
 const COMMITTED_DATA_CALL_CONTRACT_STEPS = 903;
-const COMMITTED_DATA_RANGE_CHECK_BOUND_BASE = 20;
-const COMMITTED_DATA_RANGE_CHECK_BOUND_PER_LEVEL = 4;
+const COMMITTED_DATA_RANGE_CHECK_BOUND_BASE = 40;
+const COMMITTED_DATA_RANGE_CHECK_BOUND_PER_LEVEL = 30;
 const COMMITTED_DATA_CALL_CONTRACT_RANGE_CHECKS = 18;
 const STEP_SIERRA_GAS = 100;
 const RANGE_CHECK_SIERRA_GAS = 70;
 const POSEIDON_SIERRA_GAS = 491;
 
 func committed_data_step_charge{range_check_ptr}(height: felt) -> (gas: felt) {
-    let bounded_steps = COMMITTED_DATA_STEP_BOUND_BASE + COMMITTED_DATA_STEP_BOUND_PER_LEVEL * height;
+    let bounded_steps = COMMITTED_DATA_STEP_BOUND_BASE + COMMITTED_DATA_STEP_BOUND_PER_LEVEL *
+        height;
     let needs_extra = is_le_felt(COMMITTED_DATA_CALL_CONTRACT_STEPS, bounded_steps);
     if (needs_extra == 0) {
         return (gas=0);
@@ -27,36 +30,69 @@ func committed_data_step_charge{range_check_ptr}(height: felt) -> (gas: felt) {
     return (gas=(bounded_steps - COMMITTED_DATA_CALL_CONTRACT_STEPS) * STEP_SIERRA_GAS);
 }
 
-// Roots bind the indexed values independently of the contract reading them.
-// Root must come from authenticated, current contract state, never just from a witness hint.
+// Leaves bind the complete felt key. Branches bind their critical bit and both child hashes.
+// Root must come from authenticated application state; hints supply evidence only.
 func verify_committed_data_value{range_check_ptr, poseidon_ptr: PoseidonBuiltin*}(
-    root: felt, index: felt, value: felt, siblings: felt*, height: felt
+    root: felt, key: felt, value: felt, siblings: felt*, height: felt
 ) {
     alloc_locals;
-    local leaf_data: felt* = new (COMMITTED_DATA_LEAF_DOMAIN, index, value);
+    local leaf_data: felt* = new (COMMITTED_DATA_LEAF_DOMAIN, key, value);
     let (leaf) = poseidon_hash_many(n=3, elements=leaf_data);
-    let (calculated_root) = committed_data_path(
-        node=leaf, index=index, siblings=siblings, remaining=height
-    );
+    let (high, low) = split_felt(key);
+    let (calculated_root) = committed_data_path(leaf, high, low, siblings, height, -1);
     assert calculated_root = root;
     return ();
 }
 
+// unsigned_div_rem bounds its divisor below PRIME / 2**128. Split each 128-bit word
+// into 64-bit halves before shifting, so even bit 251 uses a valid divisor.
+func committed_data_word_bit{range_check_ptr}(word: felt, bit: felt) -> (direction: felt) {
+    alloc_locals;
+    let use_lower_half = is_le_felt(bit, 63);
+    if (use_lower_half != 0) {
+        let (mask) = pow(2, bit);
+        let (shifted, _) = unsigned_div_rem(word, mask);
+        let (_, direction) = unsigned_div_rem(shifted, 2);
+        return (direction=direction);
+    }
+    let (upper, _) = unsigned_div_rem(word, 2 ** 64);
+    let (mask) = pow(2, bit - 64);
+    let (shifted, _) = unsigned_div_rem(upper, mask);
+    let (_, direction) = unsigned_div_rem(shifted, 2);
+    return (direction=direction);
+}
+
+func committed_data_key_bit{range_check_ptr}(high: felt, low: felt, bit: felt) -> (
+    direction: felt
+) {
+    let use_low = is_le_felt(bit, 127);
+    if (use_low != 0) {
+        return committed_data_word_bit(low, bit);
+    }
+    return committed_data_word_bit(high, bit - 128);
+}
+
 func committed_data_path{range_check_ptr, poseidon_ptr: PoseidonBuiltin*}(
-    node: felt, index: felt, siblings: felt*, remaining: felt
+    node: felt, high: felt, low: felt, siblings: felt*, remaining: felt, previous_bit: felt
 ) -> (root: felt) {
+    alloc_locals;
     if (remaining == 0) {
-        // Enforces 0 <= original index < 2**COMMITTED_DATA_TREE_HEIGHT.
-        assert index = 0;
         return (root=node);
     }
-    let (parent_index, bit) = unsigned_div_rem(index, 2);
-    if (bit == 0) {
-        let (parent) = poseidon_hash(x=node, y=siblings[0]);
-        return committed_data_path(parent, parent_index, siblings + 1, remaining - 1);
+    local bit = siblings[0];
+    // Bound the bit and require canonical bottom-up order; no repeated/reordered branches.
+    assert_nn(bit);
+    assert_nn(251 - bit);
+    assert_nn(bit - previous_bit - 1);
+    let (direction) = committed_data_key_bit(high, low, bit);
+    if (direction == 0) {
+        local data: felt* = new (COMMITTED_DATA_BRANCH_DOMAIN + bit, node, siblings[1]);
+        let (parent) = poseidon_hash_many(n=3, elements=data);
+        return committed_data_path(parent, high, low, siblings + 2, remaining - 1, bit);
     }
-    let (parent) = poseidon_hash(x=siblings[0], y=node);
-    return committed_data_path(parent, parent_index, siblings + 1, remaining - 1);
+    local data: felt* = new (COMMITTED_DATA_BRANCH_DOMAIN + bit, siblings[1], node);
+    let (parent) = poseidon_hash_many(n=3, elements=data);
+    return committed_data_path(parent, high, low, siblings + 2, remaining - 1, bit);
 }
 
 // Uses the existing call_contract ABI. The CommittedData adapter supplies a root obtained by storage_read.
@@ -86,13 +122,8 @@ func execute_committed_data_call{
         committed_data_failure(remaining_gas, ERROR_INVALID_ARGUMENT);
         return ();
     }
-    let index_valid = is_le_felt(request.calldata_start[1], 2 ** COMMITTED_DATA_TREE_HEIGHT - 1);
-    if (index_valid == 0) {
-        committed_data_failure(remaining_gas, ERROR_INVALID_ARGUMENT);
-        return ();
-    }
     local committed_data_root = request.calldata_start[0];
-    local committed_data_index = request.calldata_start[1];
+    local committed_data_key = request.calldata_start[1];
     local committed_data_value;
     local committed_data_siblings: felt*;
     local committed_data_height;
@@ -100,8 +131,12 @@ func execute_committed_data_call{
     let height_valid = is_le_felt(committed_data_height, COMMITTED_DATA_TREE_HEIGHT);
     assert height_valid = 1;
     let (step_charge) = committed_data_step_charge(committed_data_height);
-    let range_check_charge = (COMMITTED_DATA_RANGE_CHECK_BOUND_BASE + COMMITTED_DATA_RANGE_CHECK_BOUND_PER_LEVEL * committed_data_height - COMMITTED_DATA_CALL_CONTRACT_RANGE_CHECKS) * RANGE_CHECK_SIERRA_GAS;
-    let poseidon_charge = (committed_data_height + 2) * POSEIDON_SIERRA_GAS;
+    let range_check_charge = (
+        COMMITTED_DATA_RANGE_CHECK_BOUND_BASE +
+        COMMITTED_DATA_RANGE_CHECK_BOUND_PER_LEVEL * committed_data_height -
+        COMMITTED_DATA_CALL_CONTRACT_RANGE_CHECKS
+    ) * RANGE_CHECK_SIERRA_GAS;
+    let poseidon_charge = (2 * committed_data_height + 2) * POSEIDON_SIERRA_GAS;
     let committed_data_gas = step_charge + range_check_charge + poseidon_charge;
     let gas_sufficient = is_le_felt(committed_data_gas, remaining_gas);
     if (gas_sufficient == 0) {
@@ -113,7 +148,7 @@ func execute_committed_data_call{
     with poseidon_ptr {
         verify_committed_data_value(
             root=committed_data_root,
-            index=committed_data_index,
+            key=committed_data_key,
             value=committed_data_value,
             siblings=committed_data_siblings,
             height=committed_data_height,

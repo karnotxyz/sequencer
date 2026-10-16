@@ -21,12 +21,16 @@ pub(crate) fn load_committed_data_witness<S: StateReader>(
     mut ctx: HintContext<'_>,
 ) -> OsHintResult {
     let root = ctx.get_integer(Ids::CommittedDataRoot)?;
-    let index = ctx.get_integer(Ids::CommittedDataIndex)?;
+    let index = ctx.get_integer(Ids::CommittedDataKey)?;
     let witness = hp.committed_data_witness(root, index).ok_or_else(|| {
         OsHintError::AssertionFailed { message: "CommittedData witness unavailable".into() }
     })?;
     let path = ctx.vm.add_memory_segment();
-    let values: Vec<MaybeRelocatable> = witness.siblings.iter().copied().map(Into::into).collect();
+    let values: Vec<MaybeRelocatable> = witness
+        .siblings
+        .iter()
+        .flat_map(|step| [starknet_types_core::felt::Felt::from(step.bit).into(), step.hash.into()])
+        .collect();
     ctx.vm.load_data(path, &values)?;
     ctx.insert_value(Ids::CommittedDataSiblings, path)?;
     ctx.insert_value(Ids::CommittedDataValue, witness.value)?;

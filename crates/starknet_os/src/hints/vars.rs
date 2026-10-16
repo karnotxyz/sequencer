@@ -126,7 +126,7 @@ define_string_enum! {
     pub enum Ids {
         (UseCommittedData),
         (CommittedDataRoot),
-        (CommittedDataIndex),
+        (CommittedDataKey),
         (CommittedDataValue),
         (CommittedDataSiblings),
         (CommittedDataHeight),
