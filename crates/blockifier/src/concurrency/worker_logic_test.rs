@@ -8,6 +8,7 @@ use rstest::rstest;
 use starknet_api::abi::abi_utils::get_fee_token_var_address;
 use starknet_api::contract_class::compiled_class_hash::HashVersion;
 use starknet_api::core::{ContractAddress, Nonce};
+use starknet_api::state::StorageKey;
 use starknet_api::test_utils::declare::executable_declare_tx;
 use starknet_api::test_utils::{NonceManager, TEST_ERC20_CONTRACT_ADDRESS2};
 use starknet_api::transaction::constants::DEPLOY_CONTRACT_FUNCTION_ENTRY_POINT_NAME;
@@ -325,6 +326,12 @@ pub fn test_validate_after_commit_tx() {
 fn test_worker_execute(default_all_resource_bounds: ValidResourceBounds) {
     // Settings.
     let block_context = BlockContext::create_for_account_testing();
+    let alias_contract_address = block_context
+        .versioned_constants
+        .os_constants
+        .os_contract_addresses
+        .alias_contract_address();
+    let (sequencer_balance_key_low, _) = get_sequencer_balance_keys(&block_context);
     let enable_casm_hash_migration = block_context.versioned_constants().enable_casm_hash_migration;
     let account_contract =
         FeatureContract::AccountWithoutValidations(CairoVersion::Cairo1(RunnableCairo1::Casm));
@@ -447,7 +454,7 @@ fn test_worker_execute(default_all_resource_bounds: ValidResourceBounds) {
     } else {
         HashMap::new()
     };
-    let reads = StateMaps {
+    let mut reads = StateMaps {
         nonces: HashMap::from([(account_address, nonce!(0_u8))]),
         // Before running an entry point (call contract), we verify the contract is deployed.
         class_hashes: HashMap::from([
@@ -468,6 +475,19 @@ fn test_worker_execute(default_all_resource_bounds: ValidResourceBounds) {
         ]),
         compiled_class_hashes,
     };
+
+    // The standalone capacity check reads prospective aliases, including the sequencer balance
+    // key whose application read/write is deferred until commit. It does not allocate them.
+    for alias_key in [
+        StorageKey(account_address.0),
+        StorageKey(test_contract_address.0),
+        StorageKey(erc_contract_address.0),
+        storage_key,
+        account_balance_key_low,
+        sequencer_balance_key_low,
+    ] {
+        reads.storage.insert((alias_contract_address, alias_key), Felt::ZERO);
+    }
 
     assert_eq!(execution_output.state_diff, writes.diff(&reads));
     assert_eq!(execution_output.reads, reads);

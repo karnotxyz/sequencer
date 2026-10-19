@@ -18,6 +18,7 @@ use super::{
 use crate::state::cached_state::{CachedState, CommitmentStateDiff, StateMaps, StorageEntry};
 use crate::state::state_api::{State, StateReader};
 use crate::state::stateful_compression::{
+    predicted_alias_state_changes,
     predicted_alias_storage_entries,
     AliasCompressor,
     CompressionError,
@@ -211,6 +212,40 @@ fn test_predicted_alias_storage_entries_parity() {
         .collect();
 
     assert_eq!(predicted, actual_alias_writes);
+}
+
+#[rstest]
+fn test_predicted_alias_state_changes_match_allocation(
+    #[values(0, 2)] n_existing_aliases: u8,
+    #[values(false, true)] write_storage: bool,
+) {
+    let mut state = initial_state(n_existing_aliases);
+    if write_storage {
+        // Includes existing aliases, shared keys, an address/key collision, and both compression
+        // boundaries. Addresses below 0x80 can still have storage keys that need aliases.
+        for (address, key) in [
+            (0x100_u16, 0x101_u16),
+            (0x200, 0x101),
+            (0x101, 0x200),
+            (0x80, 0x80),
+            (0x7f, 0x7f),
+            (0xf, 0x300),
+            (0x10, 0x301),
+        ] {
+            state.set_storage_at(address.into(), key.into(), Felt::ONE).unwrap();
+        }
+        state.increment_nonce(ContractAddress::from(0x400_u16)).unwrap();
+        state.get_class_hash_at(ContractAddress::from(0x500_u16)).unwrap();
+        state.set_class_hash_at(ContractAddress::from(0x500_u16), ClassHash(Felt::ONE)).unwrap();
+    }
+    let before = state.to_state_diff().unwrap().state_maps;
+    let predicted =
+        predicted_alias_state_changes(&state, &before.keys(), *ALIAS_CONTRACT_ADDRESS).unwrap();
+    // Prediction must not allocate anything: finalization owns alias values and their ordering.
+    assert_eq!(state.to_state_diff().unwrap().state_maps, before);
+    allocate_aliases_in_storage(&mut state, *ALIAS_CONTRACT_ADDRESS).unwrap();
+    let actual = state.to_state_diff().unwrap().state_maps.keys().difference(&before.keys());
+    assert_eq!(predicted, actual);
 }
 
 #[rstest]
