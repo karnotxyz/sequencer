@@ -117,18 +117,21 @@ fn collect_profiled_committed_data_calls<'a>(
     }
 }
 
-#[tokio::test]
-async fn committed_data_root_rotation_and_shared_reads_full_os_pie() {
-    let output = prepare().await.run();
-    output.perform_default_validations();
-    output.runner_output.cairo_pie.run_validity_checks().unwrap();
-    let trace = serde_json::to_value(&output.runner_output.txs_trace).unwrap();
+/// Compare the executed OS syscall, including its wrapper, with the same resources the
+/// sequencer charges and reserves. Keep the ordinary CallContract allowance in both totals.
+fn validate_read_resources(
+    output: &starknet_os::io::os_output::StarknetOsRunnerOutput,
+) -> Vec<usize> {
+    use blockifier::blockifier_versioned_constants::VersionedConstants;
+    use blockifier::bouncer::BuiltinWeights;
+    use blockifier::utils::get_gas_cost_from_vm_resources;
+    use starknet_api::versioned_constants_logic::VersionedConstantsTrait;
+    let costs = &VersionedConstants::latest_constants().os_constants.gas_costs;
+    let proving_costs = BuiltinWeights::default().gas_costs;
+    let trace = serde_json::to_value(&output.txs_trace).unwrap();
     let mut measured_calls = Vec::new();
     collect_profiled_committed_data_calls(&trace, &mut measured_calls);
-    assert_eq!(measured_calls.len(), 62, "profile every committed-data read in the fixture");
-    if let Some(path) = std::env::var_os("COMMITTED_DATA_RESOURCE_REPORT") {
-        std::fs::write(path, serde_json::to_vec_pretty(&measured_calls).unwrap()).unwrap();
-    }
+    let mut report = Vec::new();
     let mut heights = Vec::new();
     for measured in measured_calls {
         let poseidons =
@@ -153,10 +156,8 @@ async fn committed_data_root_rotation_and_shared_reads_full_os_pie() {
                     [&cairo_vm::types::builtin_name::BuiltinName::range_check],
             "OS range checks {range_checks} exceed bouncer bound at height {height}"
         );
-        assert_eq!(
-            usize::try_from(measured["n_memory_holes"].as_u64().unwrap()).unwrap(),
-            expected.n_memory_holes
-        );
+        // OsLogger does not attribute holes per syscall. Check the whole PIE below,
+        // rather than interpreting its placeholder zero as a measurement.
         assert_eq!(
             usize::try_from(
                 measured["builtin_instance_counter"]["poseidon_builtin"].as_u64().unwrap()
@@ -165,7 +166,47 @@ async fn committed_data_root_rotation_and_shared_reads_full_os_pie() {
             expected.builtin_instance_counter
                 [&cairo_vm::types::builtin_name::BuiltinName::poseidon]
         );
+        let actual: cairo_vm::vm::runners::cairo_runner::ExecutionResources =
+            serde_json::from_value(measured.clone()).unwrap();
+        let sierra = get_gas_cost_from_vm_resources(&actual, &costs.base, &costs.builtins);
+        let sierra_bound = get_gas_cost_from_vm_resources(&expected, &costs.base, &costs.builtins);
+        let proving = get_gas_cost_from_vm_resources(&actual, &costs.base, &proving_costs);
+        let proving_bound = get_gas_cost_from_vm_resources(&expected, &costs.base, &proving_costs);
+        assert!(sierra <= sierra_bound, "Sierra resource allowance at height {height}");
+        assert!(proving <= proving_bound, "proving resource allowance at height {height}");
+        report.push(serde_json::json!({
+            "height": height, "actual": actual, "reserved": expected,
+            "sierra": sierra, "sierra_bound": sierra_bound,
+            "extra_sierra_charged": blockifier::execution::syscalls::committed_data::read_gas(height),
+            "proving": proving, "proving_bound": proving_bound,
+        }));
     }
+    // Conservatively charge *all* PIE holes, including unrelated transaction/state work,
+    // against this fixture's read headroom. This avoids relying on per-syscall hole attribution.
+    let hole_gas = output.cairo_pie.execution_resources.n_memory_holes as u64
+        * costs.base.memory_hole_gas_cost;
+    for (actual, bound) in [("sierra", "sierra_bound"), ("proving", "proving_bound")] {
+        let used: u64 = report.iter().map(|row| row[actual].as_u64().unwrap()).sum();
+        let reserved: u64 = report.iter().map(|row| row[bound].as_u64().unwrap()).sum();
+        assert!(used + hole_gas <= reserved, "read budget including all PIE holes: {actual}");
+    }
+    if let Some(path) = std::env::var_os("COMMITTED_DATA_RESOURCE_REPORT") {
+        let report = serde_json::json!({
+            "reads": report, "whole_pie": output.cairo_pie.execution_resources,
+            "whole_pie_hole_gas": hole_gas,
+        });
+        std::fs::write(path, serde_json::to_vec_pretty(&report).unwrap()).unwrap();
+    }
+    heights
+}
+
+#[tokio::test]
+async fn committed_data_root_rotation_and_shared_reads_full_os_pie() {
+    let output = prepare().await.run();
+    output.perform_default_validations();
+    output.runner_output.cairo_pie.run_validity_checks().unwrap();
+    let mut heights = validate_read_resources(&output.runner_output);
+    assert_eq!(heights.len(), 62, "profile every committed-data read in the fixture");
     heights.sort_unstable();
     let mut expected_heights: Vec<_> = (0..=19).flat_map(|height| [height, height]).collect();
     expected_heights.extend([15, 15, 15, 15, 19, 19, 19, 19]);
@@ -228,9 +269,9 @@ async fn committed_data_bad_witness_fails_inside_os() {
     assert!(error.contains("assert calculated_root = root"), "wrong failing constraint: {error}");
 }
 
-/// Opt-in integration sample: actually hash all 500,000 leaves for each of two publications.
+/// Opt-in integration: complete 30k/500k maps, hashed felt keys and two root publications each.
 #[tokio::test]
-#[ignore = "builds two complete 500k-value trees"]
+#[ignore = "builds complete 30k and 500k maps with two root publications each"]
 async fn committed_data_full_500k_snapshot_os_pie() {
     use blockifier::execution::syscalls::committed_data::CommittedDataSet;
     let contract = FeatureContract::TestContract(CairoVersion::Cairo1(RunnableCairo1::Casm));
@@ -238,25 +279,34 @@ async fn committed_data_full_500k_snapshot_os_pie() {
         TestBuilder::create_standard([(contract, calldata![Felt::ZERO, Felt::ZERO])]).await;
     let mut witnesses = Vec::new();
     let started = std::time::Instant::now();
-    for epoch in 0..2_u128 {
-        let tree = CommittedDataSet::new(
-            (0..500_000_u128)
-                .map(|index| (Felt::from(index), Felt::from(100_000_000 + index * 100 + epoch)))
-                .collect(),
-        )
-        .unwrap();
-        let root = tree.root();
-        eprintln!("500k epoch {epoch}: root={root:#x}, elapsed={:?}", started.elapsed());
-        assert!(tree.witness(Felt::from(500_000_u32)).is_none());
-        let calldata = create_calldata(reader, "test_storage_write", &[Felt::from(45), root]);
-        builder.add_funded_account_invoke(invoke_tx_args! { calldata });
-        for index in [0_u32, 17, 249999, 499999] {
-            let w = tree.witness(Felt::from(index)).unwrap();
-            assert!(w.verify());
-            let calldata =
-                create_calldata(reader, "test_committed_data_read", &[Felt::from(index), w.value]);
+    let mut expected_heights = Vec::new();
+    use starknet_types_core::hash::{Poseidon, StarkHash};
+    let key = |index: u128| Poseidon::hash_array(&[Felt::from(index)]);
+    for size in [30_000_u128, 500_000] {
+        for epoch in 0..2_u128 {
+            let tree = CommittedDataSet::new(
+                (0..size)
+                    .map(|index| (key(index), Felt::from(100_000_000 + index * 100 + epoch)))
+                    .collect(),
+            )
+            .unwrap();
+            let root = tree.root();
+            eprintln!(
+                "{size} entries, epoch {epoch}: root={root:#x}, elapsed={:?}",
+                started.elapsed()
+            );
+            assert!(tree.witness(key(size)).is_none());
+            let calldata = create_calldata(reader, "test_storage_write", &[Felt::from(45), root]);
             builder.add_funded_account_invoke(invoke_tx_args! { calldata });
-            witnesses.push(w);
+            for index in [0_u128, 17, size / 2, size - 1] {
+                let w = tree.witness(key(index)).unwrap();
+                assert!(w.verify());
+                let calldata =
+                    create_calldata(reader, "test_committed_data_read", &[key(index), w.value]);
+                builder.add_funded_account_invoke(invoke_tx_args! { calldata });
+                expected_heights.push(w.siblings.len());
+                witnesses.push(w);
+            }
         }
     }
     builder.initial_state.block_context.use_committed_data = true;
@@ -267,6 +317,10 @@ async fn committed_data_full_500k_snapshot_os_pie() {
     let output = builder.build().await.run();
     output.perform_default_validations();
     output.runner_output.cairo_pie.run_validity_checks().unwrap();
+    let mut heights = validate_read_resources(&output.runner_output);
+    heights.sort_unstable();
+    expected_heights.sort_unstable();
+    assert_eq!(heights, expected_heights, "profile every full-map read");
     if let Some(path) = std::env::var_os("COMMITTED_DATA_POC_PIE_PATH") {
         output.runner_output.cairo_pie.write_zip_file(std::path::Path::new(&path), true).unwrap();
     }

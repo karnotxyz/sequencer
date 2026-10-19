@@ -31,9 +31,9 @@ pub const MAX_COMMITTED_DATA_WITNESSES: usize = 65_536;
 // Conservative bounds include full-key bit extraction and two Poseidon permutations per node.
 // The OS flow test profiles short, long and high-bit paths against these same bounds.
 const READ_STEPS_BASE: usize = 600;
-const READ_STEPS_PER_LEVEL: usize = 400;
+const READ_STEPS_PER_LEVEL: usize = 300;
 const READ_RANGE_CHECKS_BASE: usize = 40;
-const READ_RANGE_CHECKS_PER_LEVEL: usize = 30;
+const READ_RANGE_CHECKS_PER_LEVEL: usize = 20;
 // The ordinary CallContract entry is already counted by the syscall accounting.
 const CALL_CONTRACT_STEPS: usize = 903;
 const CALL_CONTRACT_RANGE_CHECKS: usize = 18;
