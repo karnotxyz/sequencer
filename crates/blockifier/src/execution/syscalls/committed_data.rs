@@ -72,6 +72,120 @@ pub fn read_gas(height: usize) -> u64 {
         + (2 * height + 2) as u64 * POSEIDON_SIERRA_GAS
 }
 
+/// Bounded batch ABI: [root, number_of_keys, key_0, ...], returning [count, value_0, ...].
+pub const MAX_COMMITTED_DATA_READ_KEYS: usize = 1024;
+const BATCH_STEPS_PER_KEY: usize = 200;
+const BATCH_RANGE_CHECKS_PER_KEY: usize = 20;
+
+/// Decode both entrypoints before any witness retrieval. Order and duplicate keys are preserved.
+pub fn read_keys(
+    selector: Felt,
+    calldata: &[Felt],
+) -> Result<(&[Felt], bool), SyscallExecutorBaseError> {
+    if selector == selector_from_name("get_value").0 && calldata.len() == 2 {
+        return Ok((&calldata[1..], false));
+    }
+    if selector == selector_from_name("get_values").0
+        && (3..=MAX_COMMITTED_DATA_READ_KEYS + 2).contains(&calldata.len())
+        && calldata[1] == Felt::from(calldata.len() - 2)
+    {
+        return Ok((&calldata[2..], true));
+    }
+    Err(SyscallExecutorBaseError::Revert { error_data: vec![INVALID_ARGUMENT_FELT] })
+}
+
+/// Restore the ordinary-call allowance subtracted by each single-key charge except the first.
+/// Reserve additional loop/return-copy work. Batches still verify independent membership paths.
+pub fn batch_overhead_resources(
+    count: usize,
+) -> cairo_vm::vm::runners::cairo_runner::ExecutionResources {
+    use cairo_vm::types::builtin_name::BuiltinName;
+    cairo_vm::vm::runners::cairo_runner::ExecutionResources {
+        n_steps: count.saturating_sub(1) * CALL_CONTRACT_STEPS + count * BATCH_STEPS_PER_KEY,
+        n_memory_holes: 0,
+        builtin_instance_counter: std::collections::BTreeMap::from([(
+            BuiltinName::range_check,
+            count.saturating_sub(1) * CALL_CONTRACT_RANGE_CHECKS
+                + count * BATCH_RANGE_CHECKS_PER_KEY,
+        )]),
+    }
+}
+
+/// Sierra charge for the batch wrapper, matching the reserved OS resources.
+pub fn batch_overhead_gas(count: usize) -> u64 {
+    let resources = batch_overhead_resources(count);
+    resources.n_steps as u64 * STEP_SIERRA_GAS
+        + resources.builtin_instance_counter
+            [&cairo_vm::types::builtin_name::BuiltinName::range_check] as u64
+            * RANGE_CHECK_SIERRA_GAS
+}
+
+/// Shared VM/native dispatch. A batch fails as a whole; no partial values are returned.
+pub fn read_values(
+    use_committed_data: bool,
+    witnesses: &CommittedDataWitnesses,
+    selector: Felt,
+    calldata: &[Felt],
+    remaining_gas: &mut u64,
+    availability_failure: &mut Option<CommittedDataError>,
+) -> Result<
+    (Vec<Felt>, cairo_vm::vm::runners::cairo_runner::ExecutionResources),
+    SyscallExecutorBaseError,
+> {
+    // Preserve disabled-read rejection even for malformed calls to the reserved address.
+    if !use_committed_data {
+        return read_value(
+            false,
+            witnesses,
+            selector,
+            calldata,
+            remaining_gas,
+            availability_failure,
+        )
+        .map(|(value, height)| (vec![value], read_os_resources(height)));
+    }
+    let (keys, batch) = read_keys(selector, calldata)?;
+    let mut resources =
+        if batch { batch_overhead_resources(keys.len()) } else { Default::default() };
+    if batch {
+        *remaining_gas =
+            remaining_gas.checked_sub(batch_overhead_gas(keys.len())).ok_or_else(|| {
+                SyscallExecutorBaseError::Revert { error_data: vec![OUT_OF_GAS_ERROR_FELT] }
+            })?;
+    }
+    let mut values = Vec::with_capacity(keys.len() + usize::from(batch));
+    if batch {
+        values.push(Felt::from(keys.len()));
+    }
+    for key in keys {
+        let (value, height) = read_value(
+            true,
+            witnesses,
+            selector_from_name("get_value").0,
+            &[calldata[0], *key],
+            remaining_gas,
+            availability_failure,
+        )?;
+        resources += &read_os_resources(height);
+        values.push(value);
+    }
+    Ok((values, resources))
+}
+
+/// Failed calls reserve the bounded worst case, including work before an out-of-gas failure.
+pub fn failed_read_resources(
+    selector: Felt,
+    calldata: &[Felt],
+) -> cairo_vm::vm::runners::cairo_runner::ExecutionResources {
+    let (count, batch) =
+        read_keys(selector, calldata).map_or((1, false), |(keys, batch)| (keys.len(), batch));
+    let mut resources = if batch { batch_overhead_resources(count) } else { Default::default() };
+    for _ in 0..count {
+        resources += &read_os_resources(COMMITTED_DATA_TREE_HEIGHT);
+    }
+    resources
+}
+
 /// Failures of execution permission, dataset authentication or witness lookup.
 #[derive(Debug, thiserror::Error)]
 pub enum CommittedDataError {
@@ -239,6 +353,66 @@ mod tests {
     use super::*;
     use crate::blockifier_versioned_constants::VersionedConstants;
     use crate::utils::get_gas_cost_from_vm_resources;
+
+    #[test]
+    fn batch_reads_preserve_order_charge_resources_and_reject_partial_success() {
+        use crate::utils::get_gas_cost_from_vm_resources;
+        let tree =
+            CommittedDataSet::new(vec![(Felt::ZERO, Felt::MAX), (Felt::MAX, Felt::ZERO)]).unwrap();
+        let witnesses = CommittedDataWitnesses::new(vec![
+            tree.witness(Felt::ZERO).unwrap(),
+            tree.witness(Felt::MAX).unwrap(),
+        ])
+        .unwrap();
+        let selector = selector_from_name("get_values").0;
+        let calldata = [tree.root(), Felt::from(3), Felt::MAX, Felt::ZERO, Felt::MAX];
+        let charge = batch_overhead_gas(3) + 3 * read_gas(1);
+        let mut gas = charge;
+        let mut failure = None;
+        let (values, resources) =
+            read_values(true, &witnesses, selector, &calldata, &mut gas, &mut failure).unwrap();
+        assert_eq!(values, vec![Felt::from(3), Felt::ZERO, Felt::MAX, Felt::ZERO]);
+        assert_eq!(gas, 0);
+        let costs = &VersionedConstants::latest_constants().os_constants.gas_costs;
+        assert_eq!(
+            get_gas_cost_from_vm_resources(&resources, &costs.base, &costs.builtins),
+            charge
+        );
+        gas = charge - 1;
+        assert!(
+            read_values(true, &witnesses, selector, &calldata, &mut gas, &mut failure).is_err()
+        );
+        assert!(failure.is_none()); // OOG is a contract revert, not missing private data.
+        gas = charge;
+        assert!(
+            read_values(
+                true,
+                &witnesses,
+                selector,
+                &[tree.root(), Felt::TWO, Felt::ZERO, Felt::ONE],
+                &mut gas,
+                &mut failure
+            )
+            .is_err()
+        );
+        assert!(matches!(failure, Some(CommittedDataError::Unavailable)));
+        for args in [
+            vec![],
+            vec![tree.root(), Felt::ZERO],
+            vec![tree.root(), Felt::TWO, Felt::ZERO],
+            vec![Felt::ZERO; MAX_COMMITTED_DATA_READ_KEYS + 3],
+        ] {
+            assert!(read_keys(selector, &args).is_err());
+        }
+        let mut args = vec![tree.root(), Felt::from(MAX_COMMITTED_DATA_READ_KEYS)];
+        args.extend(std::iter::repeat_n(Felt::ZERO, MAX_COMMITTED_DATA_READ_KEYS));
+        assert_eq!(read_keys(selector, &args).unwrap().0.len(), MAX_COMMITTED_DATA_READ_KEYS);
+        failure = None;
+        assert!(
+            read_values(false, &witnesses, selector, &calldata, &mut gas, &mut failure).is_err()
+        );
+        assert!(matches!(failure, Some(CommittedDataError::Disabled)));
+    }
 
     #[test]
     fn address_matches_versioned_namespace() {

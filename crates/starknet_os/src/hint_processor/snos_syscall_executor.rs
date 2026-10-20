@@ -190,25 +190,39 @@ impl<S: StateReader> SyscallExecutor for SnosHintProcessor<'_, S> {
             if !syscall_handler.os_hints_config.use_committed_data {
                 return Err(invalid("committed-data reads require use_committed_data=true").into());
             }
-            blockifier::execution::syscalls::committed_data::validate_read_request(
-                request.function_selector.0,
-                &request.calldata.0,
-                *remaining_gas,
-            )?;
-            let witness = syscall_handler
-                .committed_data_witness(request.calldata.0[0], request.calldata.0[1])
-                .ok_or_else(|| invalid("committed_data witness unavailable"))?;
-            *remaining_gas = remaining_gas
-                .checked_sub(blockifier::execution::syscalls::committed_data::read_gas(
-                    witness.siblings.len(),
-                ))
-                .ok_or_else(|| invalid("insufficient committed_data gas"))?;
-            // No synthetic ordinary inner call: the proved OS has a matching dedicated branch.
-            // The committed_data branch constrains this response in place; ordinary calls instead
-            // relocate their temporary response to the inner Cairo execution's return segment.
+            use blockifier::execution::syscalls::committed_data::{
+                batch_overhead_gas,
+                read_gas,
+                read_keys,
+            };
+            let (keys, batch) = read_keys(request.function_selector.0, &request.calldata.0)?;
+            let out_of_gas = || SyscallExecutorBaseError::Revert {
+                error_data: vec![
+                    blockifier::execution::syscalls::hint_processor::OUT_OF_GAS_ERROR_FELT,
+                ],
+            };
+            if batch {
+                *remaining_gas = remaining_gas
+                    .checked_sub(batch_overhead_gas(keys.len()))
+                    .ok_or_else(out_of_gas)?;
+            }
+            let mut values = Vec::with_capacity(keys.len() + usize::from(batch));
+            if batch {
+                values.push(MaybeRelocatable::from(Felt::from(keys.len())));
+            }
+            for key in keys {
+                let witness = syscall_handler
+                    .committed_data_witness(request.calldata.0[0], *key)
+                    .ok_or_else(|| invalid("committed_data witness unavailable"))?;
+                *remaining_gas = remaining_gas
+                    .checked_sub(read_gas(witness.siblings.len()))
+                    .ok_or_else(out_of_gas)?;
+                values.push(MaybeRelocatable::from(witness.value));
+            }
+            // Cairo independently constrains every returned value, order and gas charge.
             let start_ptr = vm.add_memory_segment();
-            vm.load_data(start_ptr, &[MaybeRelocatable::from(witness.value)])?;
-            let segment = ReadOnlySegment { start_ptr, length: 1 };
+            vm.load_data(start_ptr, &values)?;
+            let segment = ReadOnlySegment { start_ptr, length: values.len() };
             return Ok(CallContractResponse { segment });
         }
         call_contract_helper(vm, syscall_handler, remaining_gas)

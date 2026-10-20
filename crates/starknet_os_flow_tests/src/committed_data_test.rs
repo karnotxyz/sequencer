@@ -401,6 +401,9 @@ async fn committed_data_invalid_requests_produce_provable_reverts_without_witnes
     for (selector, args) in [
         (Felt::ZERO, vec![Felt::ZERO, Felt::ZERO]),
         (selector_from_name("get_value").0, vec![Felt::ZERO]),
+        (selector_from_name("get_values").0, vec![Felt::ZERO, Felt::ZERO]),
+        (selector_from_name("get_values").0, vec![Felt::ZERO, Felt::TWO, Felt::ZERO]),
+        (selector_from_name("get_values").0, vec![Felt::ZERO; 1027]),
     ] {
         let mut raw = vec![COMMITTED_DATA_ADDRESS, selector, Felt::from(args.len())];
         raw.extend(args);
@@ -424,4 +427,78 @@ async fn committed_data_virtual_os_uses_standard_config_hash() {
     let calldata = create_calldata(reader, "test_storage_read", &[Felt::from(45)]);
     builder.add_funded_account_invoke(invoke_tx_args! { calldata });
     builder.build().await.run_virtual_and_validate();
+}
+
+/// Real OS replay of batches, including zero/full-width values, duplicates and the maximum ABI
+/// size.
+#[tokio::test]
+async fn committed_data_batches_match_os_and_bound_resources() {
+    use blockifier::execution::syscalls::committed_data::{
+        batch_overhead_resources,
+        CommittedDataSet,
+        COMMITTED_DATA_ADDRESS,
+    };
+    use starknet_api::abi::abi_utils::selector_from_name;
+    let contract = FeatureContract::TestContract(CairoVersion::Cairo1(RunnableCairo1::Casm));
+    let (mut builder, [reader]) =
+        TestBuilder::create_standard([(contract, calldata![Felt::ZERO, Felt::ZERO])]).await;
+    builder.os_hints_config.full_output = true;
+    builder.initial_state.block_context.use_committed_data = true;
+    builder.os_hints_config.use_committed_data = true;
+    let tree =
+        CommittedDataSet::new(vec![(Felt::ZERO, Felt::MAX), (Felt::MAX, Felt::ZERO)]).unwrap();
+    let long = witness_for_key(Felt::MAX, Felt::MAX, 252);
+    let witnesses =
+        vec![tree.witness(Felt::ZERO).unwrap(), tree.witness(Felt::MAX).unwrap(), long.clone()];
+    builder.initial_state.block_context.committed_data_witnesses =
+        Arc::new(CommittedDataWitnesses::new(witnesses.clone()).unwrap());
+    builder.os_hints_config.committed_data_witnesses = witnesses;
+    let cases = [(1, 1), (3, 1), (150, 1), (1024, 1), (2, 252)];
+    for (count, height) in cases {
+        let root = if height == 252 { long.root } else { tree.root() };
+        let mut args = vec![root, Felt::from(count)];
+        args.extend(
+            (0..count).map(|i| if height == 252 || i % 2 == 0 { Felt::MAX } else { Felt::ZERO }),
+        );
+        let mut raw = vec![
+            COMMITTED_DATA_ADDRESS,
+            selector_from_name("get_values").0,
+            Felt::from(args.len()),
+        ];
+        raw.extend(args);
+        builder.add_funded_account_invoke(
+            invoke_tx_args! {calldata: create_calldata(reader, "test_call_contract", &raw)},
+        );
+    }
+    let output = builder.build().await.run();
+    output.perform_default_validations();
+    output.runner_output.cairo_pie.run_validity_checks().unwrap();
+    let trace = serde_json::to_value(&output.runner_output.txs_trace).unwrap();
+    let mut calls = Vec::new();
+    collect_profiled_committed_data_calls(&trace, &mut calls);
+    assert_eq!(calls.len(), cases.len());
+    let mut measured_steps = output.runner_output.cairo_pie.execution_resources.n_memory_holes;
+    let mut reserved_steps = 0;
+    for (actual, (count, height)) in calls.iter().zip(cases) {
+        let mut reserved = &get_const_syscall_resources(SyscallSelector::CallContract)
+            + &batch_overhead_resources(count);
+        for _ in 0..count {
+            reserved += &read_os_resources(height);
+        }
+        measured_steps += actual["n_steps"].as_u64().unwrap() as usize;
+        reserved_steps += reserved.n_steps;
+        eprintln!("batch keys={count} height={height}: actual={actual} reserved={reserved:?}");
+        assert!(
+            actual["n_steps"].as_u64().unwrap() <= reserved.n_steps as u64,
+            "batch steps: {actual}"
+        );
+        for (name, bound) in reserved.builtin_instance_counter {
+            let name = format!("{}_builtin", name.to_str());
+            assert!(
+                actual["builtin_instance_counter"][&name].as_u64().unwrap_or(0) <= bound as u64,
+                "batch builtins: {actual}"
+            );
+        }
+    }
+    assert!(measured_steps <= reserved_steps, "batch allowance must cover all PIE holes as well");
 }

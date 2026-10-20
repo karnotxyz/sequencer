@@ -106,23 +106,18 @@ from starkware.starknet.core.os.builtins import BuiltinPointers, SelectableBuilt
 
 const COMMITTED_DATA_GET_VALUE_SELECTOR = 1088514629534027837943348492744869453336870381453867699032131389309368223152;
 
-func execute_committed_data_call{
-    range_check_ptr, syscall_ptr: felt*, builtin_ptrs: BuiltinPointers*
-}(request: CallContractRequest*, remaining_gas: felt, use_committed_data: felt) {
+const COMMITTED_DATA_GET_VALUES_SELECTOR = 915235083203333064963171029839308968026302113527340519125611694343636180392;
+const MAX_COMMITTED_DATA_READ_KEYS = 1024;
+const COMMITTED_DATA_BATCH_STEPS_PER_KEY = 200;
+const COMMITTED_DATA_BATCH_RANGE_CHECKS_PER_KEY = 20;
+from starkware.cairo.common.alloc import alloc
+from starkware.cairo.common.memcpy import memcpy
+
+// One constrained membership read. Out-of-gas preserves the gas before this read.
+func committed_data_read_one{range_check_ptr, poseidon_ptr: PoseidonBuiltin*}(
+    committed_data_root: felt, committed_data_key: felt, remaining_gas: felt
+) -> (value: felt, gas: felt, error: felt) {
     alloc_locals;
-    assert request.contract_address = COMMITTED_DATA_CONTRACT_ADDRESS;
-    // Reject this proof instead of making execution depend on a private mode bit.
-    assert use_committed_data = 1;
-    if (request.selector != COMMITTED_DATA_GET_VALUE_SELECTOR) {
-        committed_data_failure(remaining_gas, ERROR_INVALID_ARGUMENT);
-        return ();
-    }
-    if (request.calldata_end != request.calldata_start + 2) {
-        committed_data_failure(remaining_gas, ERROR_INVALID_ARGUMENT);
-        return ();
-    }
-    local committed_data_root = request.calldata_start[0];
-    local committed_data_key = request.calldata_start[1];
     local committed_data_value;
     local committed_data_siblings: felt*;
     local committed_data_height;
@@ -136,21 +131,99 @@ func execute_committed_data_call{
         COMMITTED_DATA_CALL_CONTRACT_RANGE_CHECKS
     ) * RANGE_CHECK_SIERRA_GAS;
     let poseidon_charge = (2 * committed_data_height + 2) * POSEIDON_SIERRA_GAS;
-    let committed_data_gas = step_charge + range_check_charge + poseidon_charge;
-    let gas_sufficient = is_le_felt(committed_data_gas, remaining_gas);
+    local charge = step_charge + range_check_charge + poseidon_charge;
+    let gas_sufficient = is_le_felt(charge, remaining_gas);
     if (gas_sufficient == 0) {
-        committed_data_failure(remaining_gas, ERROR_OUT_OF_GAS);
-        return ();
+        return (value=0, gas=remaining_gas, error=ERROR_OUT_OF_GAS);
     }
+    verify_committed_data_value(
+        root=committed_data_root,
+        key=committed_data_key,
+        value=committed_data_value,
+        siblings=committed_data_siblings,
+        height=committed_data_height,
+    );
+    assert_nn(remaining_gas - charge);
+    return (value=committed_data_value, gas=remaining_gas - charge, error=0);
+}
+
+func committed_data_read_many{range_check_ptr, poseidon_ptr: PoseidonBuiltin*}(
+    root: felt, keys: felt*, count: felt, values: felt*, remaining_gas: felt
+) -> (gas: felt, error: felt) {
+    if (count == 0) {
+        return (gas=remaining_gas, error=0);
+    }
+    let (value, gas, error) = committed_data_read_one(root, keys[0], remaining_gas);
+    if (error != 0) {
+        return (gas=gas, error=error);
+    }
+    assert values[0] = value;
+    return committed_data_read_many(root, keys + 1, count - 1, values + 1, gas);
+}
+
+func execute_committed_data_call{
+    range_check_ptr, syscall_ptr: felt*, builtin_ptrs: BuiltinPointers*
+}(request: CallContractRequest*, remaining_gas: felt, use_committed_data: felt) {
+    alloc_locals;
+    assert request.contract_address = COMMITTED_DATA_CONTRACT_ADDRESS;
+    assert use_committed_data = 1;
+    local keys: felt*;
+    local count;
+    local batch;
+    local read_gas;
+    local read_range_check_ptr;
+    if (request.selector == COMMITTED_DATA_GET_VALUE_SELECTOR) {
+        if (request.calldata_end != request.calldata_start + 2) {
+            committed_data_failure(remaining_gas, ERROR_INVALID_ARGUMENT);
+            return ();
+        }
+        assert keys = request.calldata_start + 1;
+        assert count = 1;
+        assert batch = 0;
+        assert read_gas = remaining_gas;
+        assert read_range_check_ptr = range_check_ptr;
+    } else {
+        if (request.selector != COMMITTED_DATA_GET_VALUES_SELECTOR) {
+            committed_data_failure(remaining_gas, ERROR_INVALID_ARGUMENT);
+            return ();
+        }
+        let length = request.calldata_end - request.calldata_start;
+        let length_min = is_le_felt(3, length);
+        let length_max = is_le_felt(length, MAX_COMMITTED_DATA_READ_KEYS + 2);
+        let length_valid = length_min * length_max;
+        if (length_valid == 0) {
+            committed_data_failure(remaining_gas, ERROR_INVALID_ARGUMENT);
+            return ();
+        }
+        if (request.calldata_start[1] != length - 2) {
+            committed_data_failure(remaining_gas, ERROR_INVALID_ARGUMENT);
+            return ();
+        }
+        assert count = length - 2;
+        assert keys = request.calldata_start + 2;
+        assert batch = 1;
+        let overhead = (
+            (count - 1) * COMMITTED_DATA_CALL_CONTRACT_STEPS +
+            count * COMMITTED_DATA_BATCH_STEPS_PER_KEY
+        ) * STEP_SIERRA_GAS + (
+            (count - 1) * COMMITTED_DATA_CALL_CONTRACT_RANGE_CHECKS +
+            count * COMMITTED_DATA_BATCH_RANGE_CHECKS_PER_KEY
+        ) * RANGE_CHECK_SIERRA_GAS;
+        let gas_sufficient = is_le_felt(overhead, remaining_gas);
+        if (gas_sufficient == 0) {
+            committed_data_failure(remaining_gas, ERROR_OUT_OF_GAS);
+            return ();
+        }
+        assert read_gas = remaining_gas - overhead;
+        assert read_range_check_ptr = range_check_ptr;
+    }
+    let range_check_ptr = read_range_check_ptr;
+    let (local values) = alloc();
     let selectable_builtins = &builtin_ptrs.selectable;
     let poseidon_ptr = selectable_builtins.poseidon;
     with poseidon_ptr {
-        verify_committed_data_value(
-            root=committed_data_root,
-            key=committed_data_key,
-            value=committed_data_value,
-            siblings=committed_data_siblings,
-            height=committed_data_height,
+        let (local gas, local error) = committed_data_read_many(
+            request.calldata_start[0], keys, count, values, read_gas
         );
     }
     tempvar builtin_ptrs = new BuiltinPointers(
@@ -168,13 +241,17 @@ func execute_committed_data_call{
         ),
         non_selectable=builtin_ptrs.non_selectable,
     );
-    assert_nn(remaining_gas - committed_data_gas);
-    assert [cast(syscall_ptr, ResponseHeader*)] = ResponseHeader(
-        gas=remaining_gas - committed_data_gas, failure_flag=0
-    );
+    if (error != 0) {
+        committed_data_failure(gas, error);
+        return ();
+    }
+    assert [cast(syscall_ptr, ResponseHeader*)] = ResponseHeader(gas=gas, failure_flag=0);
     let response = cast(syscall_ptr + ResponseHeader.SIZE, CallContractResponse*);
-    assert response.retdata_end = response.retdata_start + 1;
-    assert response.retdata_start[0] = committed_data_value;
+    assert response.retdata_end = response.retdata_start + count + batch;
+    if (batch != 0) {
+        assert response.retdata_start[0] = count;
+    }
+    memcpy(response.retdata_start + batch, values, count);
     let syscall_ptr = syscall_ptr + ResponseHeader.SIZE + CallContractResponse.SIZE;
     return ();
 }

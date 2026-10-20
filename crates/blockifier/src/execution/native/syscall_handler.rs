@@ -508,7 +508,7 @@ impl StarknetSyscallHandler for &mut NativeSyscallHandler<'_> {
             .map_err(|e| self.handle_error(remaining_gas, e))?;
 
         if address == crate::execution::syscalls::committed_data::COMMITTED_DATA_ADDRESS {
-            let result = crate::execution::syscalls::committed_data::read_value(
+            let result = crate::execution::syscalls::committed_data::read_values(
                 self.base.context.tx_context.block_context.use_committed_data,
                 &self.base.context.tx_context.block_context.committed_data_witnesses,
                 entry_point_selector,
@@ -516,18 +516,23 @@ impl StarknetSyscallHandler for &mut NativeSyscallHandler<'_> {
                 remaining_gas,
                 &mut self.base.context.committed_data_failure,
             );
-            let height = result.as_ref().map_or(
-                crate::execution::syscalls::committed_data::COMMITTED_DATA_TREE_HEIGHT,
-                |(_, height)| *height,
+            let resources = result.as_ref().map_or_else(
+                |_| {
+                    crate::execution::syscalls::committed_data::failed_read_resources(
+                        entry_point_selector,
+                        calldata,
+                    )
+                },
+                |(_, resources)| resources.clone(),
             );
-            self.base.account_committed_data_read(height);
-            let (value, _) = result.map_err(|e| self.handle_error(remaining_gas, e.into()))?;
+            self.base.account_committed_data_read(&resources);
+            let (values, _) = result.map_err(|e| self.handle_error(remaining_gas, e.into()))?;
             log::debug!(
                 target: "committed_data_native",
                 "Native committed_data system call completed: caller={}",
                 self.base.call.storage_address
             );
-            return Ok(vec![value]);
+            return Ok(values);
         }
 
         let class_hash = self

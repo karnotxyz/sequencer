@@ -733,3 +733,47 @@ fn committed_data_disabled_or_unavailable_rejects_transaction_without_state_chan
         assert_eq!(state.to_state_diff().unwrap(), before);
     }
 }
+
+#[cfg_attr(feature = "cairo_native", test_case(RunnableCairo1::Native; "native"))]
+#[test_case(RunnableCairo1::Casm; "vm")]
+fn committed_data_batch_dispatch_returns_values_in_order(runnable: RunnableCairo1) {
+    use starknet_types_core::felt::Felt;
+
+    use crate::execution::syscalls::committed_data::{
+        CommittedDataSet,
+        CommittedDataWitnesses,
+        COMMITTED_DATA_ADDRESS,
+    };
+    let contract = FeatureContract::TestContract(CairoVersion::Cairo1(runnable));
+    let tree =
+        CommittedDataSet::new(vec![(Felt::ZERO, Felt::MAX), (Felt::MAX, Felt::ZERO)]).unwrap();
+    let mut state = test_state(&ChainInfo::create_for_testing(), BALANCE, &[(contract, 1)]);
+    let mut context = BlockContext::create_for_testing();
+    context.use_committed_data = true;
+    context.committed_data_witnesses = Arc::new(
+        CommittedDataWitnesses::new(vec![
+            tree.witness(Felt::ZERO).unwrap(),
+            tree.witness(Felt::MAX).unwrap(),
+        ])
+        .unwrap(),
+    );
+    let call = CallEntryPoint {
+        entry_point_selector: selector_from_name("test_call_contract"),
+        calldata: calldata_macro![
+            COMMITTED_DATA_ADDRESS,
+            selector_from_name("get_values").0,
+            Felt::from(5),
+            tree.root(),
+            Felt::from(3),
+            Felt::MAX,
+            Felt::ZERO,
+            Felt::MAX
+        ],
+        ..trivial_external_entry_point_new(contract)
+    };
+    let info = call.execute_directly_given_block_context(&mut state, context).unwrap();
+    assert!(!info.execution.failed);
+    info.check_native_execution(runnable.is_cairo_native());
+    // The compiled fixture forwards the special call's length-prefixed return data.
+    assert_eq!(info.execution.retdata.0, vec![Felt::from(3), Felt::ZERO, Felt::MAX, Felt::ZERO]);
+}
