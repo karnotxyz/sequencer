@@ -74,8 +74,6 @@ pub fn read_gas(height: usize) -> u64 {
 
 /// Bounded batch ABI: [root, number_of_keys, key_0, ...], returning [count, value_0, ...].
 pub const MAX_COMMITTED_DATA_READ_KEYS: usize = 1024;
-const BATCH_STEPS_PER_KEY: usize = 200;
-const BATCH_RANGE_CHECKS_PER_KEY: usize = 20;
 
 /// Decode both entrypoints before any witness retrieval. Order and duplicate keys are preserved.
 pub fn read_keys(
@@ -95,18 +93,18 @@ pub fn read_keys(
 }
 
 /// Restore the ordinary-call allowance subtracted by each single-key charge except the first.
-/// Reserve additional loop/return-copy work. Batches still verify independent membership paths.
+/// Full-OS batch tests include loop/copy work within each existing single-read allowance.
+/// Batches still verify independent membership paths; no per-proof discount is applied.
 pub fn batch_overhead_resources(
     count: usize,
 ) -> cairo_vm::vm::runners::cairo_runner::ExecutionResources {
     use cairo_vm::types::builtin_name::BuiltinName;
     cairo_vm::vm::runners::cairo_runner::ExecutionResources {
-        n_steps: count.saturating_sub(1) * CALL_CONTRACT_STEPS + count * BATCH_STEPS_PER_KEY,
+        n_steps: count.saturating_sub(1) * CALL_CONTRACT_STEPS,
         n_memory_holes: 0,
         builtin_instance_counter: std::collections::BTreeMap::from([(
             BuiltinName::range_check,
-            count.saturating_sub(1) * CALL_CONTRACT_RANGE_CHECKS
-                + count * BATCH_RANGE_CHECKS_PER_KEY,
+            count.saturating_sub(1) * CALL_CONTRACT_RANGE_CHECKS,
         )]),
     }
 }

@@ -447,18 +447,29 @@ async fn committed_data_batches_match_os_and_bound_resources() {
     builder.os_hints_config.use_committed_data = true;
     let tree =
         CommittedDataSet::new(vec![(Felt::ZERO, Felt::MAX), (Felt::MAX, Felt::ZERO)]).unwrap();
-    let long = witness_for_key(Felt::MAX, Felt::MAX, 252);
-    let witnesses =
-        vec![tree.witness(Felt::ZERO).unwrap(), tree.witness(Felt::MAX).unwrap(), long.clone()];
+    // Synthetic paths cover singleton and full-felt bit boundaries without constructing
+    // adversarially large maps. The paired benchmark separately uses distinct real-map keys.
+    let paths: Vec<_> = [0, 2, 15, 19, 63, 64, 127, 128, 250, 251, 252]
+        .into_iter()
+        .map(|height| witness_for_key(Felt::MAX, Felt::MAX, height))
+        .collect();
+    let mut witnesses = vec![tree.witness(Felt::ZERO).unwrap(), tree.witness(Felt::MAX).unwrap()];
+    witnesses.extend(paths.iter().cloned());
     builder.initial_state.block_context.committed_data_witnesses =
         Arc::new(CommittedDataWitnesses::new(witnesses.clone()).unwrap());
     builder.os_hints_config.committed_data_witnesses = witnesses;
-    let cases = [(1, 1), (3, 1), (150, 1), (1024, 1), (2, 252)];
-    for (count, height) in cases {
-        let root = if height == 252 { long.root } else { tree.root() };
+    let mut cases =
+        vec![(1, 1), (3, 1), (100, 1), (150, 1), (1024, 1), (1024, 0), (150, 19), (2, 252)];
+    cases.extend(paths.iter().map(|path| (1, path.siblings.len())));
+    for &(count, height) in &cases {
+        let root = if height == 1 {
+            tree.root()
+        } else {
+            paths.iter().find(|p| p.siblings.len() == height).unwrap().root
+        };
         let mut args = vec![root, Felt::from(count)];
         args.extend(
-            (0..count).map(|i| if height == 252 || i % 2 == 0 { Felt::MAX } else { Felt::ZERO }),
+            (0..count).map(|i| if height != 1 || i % 2 == 0 { Felt::MAX } else { Felt::ZERO }),
         );
         let mut raw = vec![
             COMMITTED_DATA_ADDRESS,

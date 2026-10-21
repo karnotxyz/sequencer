@@ -108,8 +108,6 @@ const COMMITTED_DATA_GET_VALUE_SELECTOR = 10885146295340278379433484927448694533
 
 const COMMITTED_DATA_GET_VALUES_SELECTOR = 915235083203333064963171029839308968026302113527340519125611694343636180392;
 const MAX_COMMITTED_DATA_READ_KEYS = 1024;
-const COMMITTED_DATA_BATCH_STEPS_PER_KEY = 200;
-const COMMITTED_DATA_BATCH_RANGE_CHECKS_PER_KEY = 20;
 from starkware.cairo.common.alloc import alloc
 from starkware.cairo.common.memcpy import memcpy
 
@@ -202,13 +200,12 @@ func execute_committed_data_call{
         assert count = length - 2;
         assert keys = request.calldata_start + 2;
         assert batch = 1;
-        let overhead = (
-            (count - 1) * COMMITTED_DATA_CALL_CONTRACT_STEPS +
-            count * COMMITTED_DATA_BATCH_STEPS_PER_KEY
-        ) * STEP_SIERRA_GAS + (
-            (count - 1) * COMMITTED_DATA_CALL_CONTRACT_RANGE_CHECKS +
-            count * COMMITTED_DATA_BATCH_RANGE_CHECKS_PER_KEY
-        ) * RANGE_CHECK_SIERRA_GAS;
+        // Restore the ordinary-call allowance for all keys except the first. Measured batch
+        // iteration and return-copy work fit within the existing single-read resource bounds.
+        let overhead = (count - 1) * (
+            COMMITTED_DATA_CALL_CONTRACT_STEPS * STEP_SIERRA_GAS +
+            COMMITTED_DATA_CALL_CONTRACT_RANGE_CHECKS * RANGE_CHECK_SIERRA_GAS
+        );
         let gas_sufficient = is_le_felt(overhead, remaining_gas);
         if (gas_sufficient == 0) {
             committed_data_failure(remaining_gas, ERROR_OUT_OF_GAS);
