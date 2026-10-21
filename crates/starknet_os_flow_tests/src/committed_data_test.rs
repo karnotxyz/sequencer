@@ -434,9 +434,11 @@ async fn committed_data_virtual_os_uses_standard_config_hash() {
 #[tokio::test]
 async fn committed_data_batches_match_os_and_bound_resources() {
     use blockifier::execution::syscalls::committed_data::{
-        batch_overhead_resources,
-        CommittedDataSet,
         COMMITTED_DATA_ADDRESS,
+        CommittedDataBatchProof,
+        CommittedDataSet,
+        batch_os_resources,
+        leaf,
     };
     use starknet_api::abi::abi_utils::selector_from_name;
     let contract = FeatureContract::TestContract(CairoVersion::Cairo1(RunnableCairo1::Casm));
@@ -455,22 +457,40 @@ async fn committed_data_batches_match_os_and_bound_resources() {
         .collect();
     let mut witnesses = vec![tree.witness(Felt::ZERO).unwrap(), tree.witness(Felt::MAX).unwrap()];
     witnesses.extend(paths.iter().cloned());
+    let sparse = CommittedDataSet::new(
+        (0..300).map(|i| (leaf(Felt::from(i), Felt::MAX), Felt::from(i))).collect(),
+    )
+    .unwrap();
+    witnesses.extend(sparse.entries().iter().map(|(key, _)| sparse.witness(*key).unwrap()));
     builder.initial_state.block_context.committed_data_witnesses =
         Arc::new(CommittedDataWitnesses::new(witnesses.clone()).unwrap());
     builder.os_hints_config.committed_data_witnesses = witnesses;
-    let mut cases =
+    let mut depths =
         vec![(1, 1), (3, 1), (100, 1), (150, 1), (1024, 1), (1024, 0), (150, 19), (2, 252)];
-    cases.extend(paths.iter().map(|path| (1, path.siblings.len())));
-    for &(count, height) in &cases {
-        let root = if height == 1 {
-            tree.root()
-        } else {
-            paths.iter().find(|p| p.siblings.len() == height).unwrap().root
-        };
-        let mut args = vec![root, Felt::from(count)];
-        args.extend(
-            (0..count).map(|i| if height != 1 || i % 2 == 0 { Felt::MAX } else { Felt::ZERO }),
-        );
+    depths.extend(paths.iter().map(|path| (1, path.siblings.len())));
+    let mut cases: Vec<_> = depths
+        .into_iter()
+        .map(|(count, height)| {
+            let root = if height == 1 {
+                tree.root()
+            } else {
+                paths.iter().find(|p| p.siblings.len() == height).unwrap().root
+            };
+            let keys: Vec<_> = (0..count)
+                .map(|i| if height != 1 || i % 2 == 0 { Felt::MAX } else { Felt::ZERO })
+                .collect();
+            (root, keys, if height == 1 { count.min(2) } else { 1 }, height)
+        })
+        .collect();
+    for count in [100, 150, 1024] {
+        let keys: Vec<_> =
+            (0..count).map(|i| sparse.entries()[(i * 17) % sparse.entries().len()].0).collect();
+        let proof = CommittedDataBatchProof::from_dataset(&sparse, &keys).unwrap();
+        cases.push((sparse.root(), keys, proof.unique_leaves(), proof.branches));
+    }
+    for (root, keys, _, _) in &cases {
+        let mut args = vec![*root, Felt::from(keys.len())];
+        args.extend(keys);
         let mut raw = vec![
             COMMITTED_DATA_ADDRESS,
             selector_from_name("get_values").0,
@@ -490,15 +510,16 @@ async fn committed_data_batches_match_os_and_bound_resources() {
     assert_eq!(calls.len(), cases.len());
     let mut measured_steps = output.runner_output.cairo_pie.execution_resources.n_memory_holes;
     let mut reserved_steps = 0;
-    for (actual, (count, height)) in calls.iter().zip(cases) {
-        let mut reserved = &get_const_syscall_resources(SyscallSelector::CallContract)
-            + &batch_overhead_resources(count);
-        for _ in 0..count {
-            reserved += &read_os_resources(height);
-        }
+    for (actual, (_, keys, unique, branches)) in calls.iter().zip(cases) {
+        let count = keys.len();
+        let reserved = &get_const_syscall_resources(SyscallSelector::CallContract)
+            + &batch_os_resources(count, unique, branches);
         measured_steps += actual["n_steps"].as_u64().unwrap() as usize;
         reserved_steps += reserved.n_steps;
-        eprintln!("batch keys={count} height={height}: actual={actual} reserved={reserved:?}");
+        eprintln!(
+            "batch keys={count} unique={unique} branches={branches}: actual={actual} \
+             reserved={reserved:?}"
+        );
         assert!(
             actual["n_steps"].as_u64().unwrap() <= reserved.n_steps as u64,
             "batch steps: {actual}"

@@ -682,6 +682,16 @@ fn committed_data_disabled_or_unavailable_rejects_transaction_without_state_chan
     #[derive(Debug)]
     struct FailingProvider;
     impl CommittedDataProvider for FailingProvider {
+        fn batch(
+            &self,
+            _: Felt,
+            _: &[Felt],
+        ) -> Result<
+            crate::execution::syscalls::committed_data::CommittedDataBatchProof,
+            CommittedDataError,
+        > {
+            Err(CommittedDataError::Provider("test provider unavailable".into()))
+        }
         fn value(&self, _: Felt, _: Felt) -> Result<Option<(Felt, usize)>, CommittedDataError> {
             Err(CommittedDataError::Provider("test provider unavailable".into()))
         }
@@ -740,9 +750,11 @@ fn committed_data_batch_dispatch_returns_values_in_order(runnable: RunnableCairo
     use starknet_types_core::felt::Felt;
 
     use crate::execution::syscalls::committed_data::{
+        COMMITTED_DATA_ADDRESS,
         CommittedDataSet,
         CommittedDataWitnesses,
-        COMMITTED_DATA_ADDRESS,
+        batch_gas,
+        batch_os_resources,
     };
     let contract = FeatureContract::TestContract(CairoVersion::Cairo1(runnable));
     let tree =
@@ -774,6 +786,10 @@ fn committed_data_batch_dispatch_returns_values_in_order(runnable: RunnableCairo
     let info = call.execute_directly_given_block_context(&mut state, context).unwrap();
     assert!(!info.execution.failed);
     info.check_native_execution(runnable.is_cairo_native());
+    assert!(info.execution.gas_consumed >= batch_gas(3, 2, 1));
+    for (builtin, minimum) in batch_os_resources(3, 2, 1).builtin_instance_counter {
+        assert!(info.builtin_counters.get(&builtin.into()).copied().unwrap_or_default() >= minimum);
+    }
     // The compiled fixture forwards the special call's length-prefixed return data.
     assert_eq!(info.execution.retdata.0, vec![Felt::from(3), Felt::ZERO, Felt::MAX, Felt::ZERO]);
 }

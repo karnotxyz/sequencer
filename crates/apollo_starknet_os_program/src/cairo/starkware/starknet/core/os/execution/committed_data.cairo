@@ -1,6 +1,7 @@
 // Experimental protocol extension. Not enabled on upstream Starknet.
 from starkware.cairo.common.poseidon_state import PoseidonBuiltinState
-from starkware.cairo.common.cairo_builtins import PoseidonBuiltin
+from starkware.cairo.common.cairo_builtins import PoseidonBuiltin, BitwiseBuiltin
+from starkware.cairo.common.bitwise import bitwise_and
 from starkware.cairo.common.math import assert_nn, unsigned_div_rem, split_felt
 
 // starknet_keccak("committed_data_v1"), matching the VM/Native protocol reservation.
@@ -19,6 +20,7 @@ const COMMITTED_DATA_CALL_CONTRACT_RANGE_CHECKS = 18;
 const STEP_SIERRA_GAS = 100;
 const RANGE_CHECK_SIERRA_GAS = 70;
 const POSEIDON_SIERRA_GAS = 491;
+const BITWISE_SIERRA_GAS = 583;
 
 func committed_data_step_charge{range_check_ptr}(height: felt) -> (gas: felt) {
     let bounded_steps = COMMITTED_DATA_STEP_BOUND_BASE + COMMITTED_DATA_STEP_BOUND_PER_LEVEL *
@@ -145,18 +147,211 @@ func committed_data_read_one{range_check_ptr, poseidon_ptr: PoseidonBuiltin*}(
     return (value=committed_data_value, gas=remaining_gas - charge, error=0);
 }
 
-func committed_data_read_many{range_check_ptr, poseidon_ptr: PoseidonBuiltin*}(
-    root: felt, keys: felt*, count: felt, values: felt*, remaining_gas: felt
-) -> (gas: felt, error: felt) {
+// A preorder multiproof expands only the union of requested membership paths. Counts are
+// consumed by constrained recursion, not trusted from the hint. Each leaf checks all ancestor
+// directions with two 128-bit masks, then hashes its full key/value exactly once.
+func committed_data_batch_node{
+    range_check_ptr,
+    poseidon_ptr: PoseidonBuiltin*,
+    bitwise_ptr: BitwiseBuiltin*,
+    proof: felt*,
+    branches_left,
+    leaves_left,
+}(
+    leaves: felt*,
+    leaf_count: felt,
+    parent_bit: felt,
+    mask_high: felt,
+    mask_low: felt,
+    path_high: felt,
+    path_low: felt,
+) -> (hash: felt, used: felt) {
+    alloc_locals;
+    if (proof[0] == 0) {
+        let hash = proof[1];
+        let proof = proof + 2;
+        return (hash=hash, used=0);
+    }
+    if (proof[0] == 1) {
+        assert_nn(leaves_left - 1);
+        let leaves_left = leaves_left - 1;
+        let index = proof[1];
+        assert_nn(index);
+        assert_nn(leaf_count - index - 1);
+        local key = leaves[2 * index];
+        local value = leaves[2 * index + 1];
+        let proof = proof + 2;
+        let (local high, local low) = split_felt(key);
+        let (actual_high) = bitwise_and(high, mask_high);
+        assert actual_high = path_high;
+        let (actual_low) = bitwise_and(low, mask_low);
+        assert actual_low = path_low;
+        let (hash) = committed_data_hash3(COMMITTED_DATA_LEAF_DOMAIN, key, value);
+        return (hash=hash, used=1);
+    }
+    assert proof[0] = 2;
+    local bit = proof[1];
+    assert_nn(bit);
+    assert_nn(parent_bit - bit - 1);
+    assert_nn(branches_left - 1);
+    let branches_left = branches_left - 1;
+    let proof = proof + 2;
+    let (local bit_high, local bit_low) = committed_data_mask_bit(bit);
+    let (local left, local left_used) = committed_data_batch_node(
+        leaves, leaf_count, bit, mask_high + bit_high, mask_low + bit_low, path_high, path_low
+    );
+    let (right, right_used) = committed_data_batch_node(
+        leaves,
+        leaf_count,
+        bit,
+        mask_high + bit_high,
+        mask_low + bit_low,
+        path_high + bit_high,
+        path_low + bit_low,
+    );
+    local used = left_used + right_used;
+    // Every expanded subtree must contain a requested leaf; opaque siblings stay opaque.
+    assert_nn(used - 1);
+    let (hash) = committed_data_hash3(COMMITTED_DATA_BRANCH_DOMAIN + bit, left, right);
+    return (hash=hash, used=used);
+}
+
+// Callers constrain bit to 0..251. The table is program data, not hint-controlled memory.
+func committed_data_mask_bit{range_check_ptr}(bit: felt) -> (high: felt, low: felt) {
+    let use_low = is_le(bit, 127);
+    if (use_low != 0) {
+        let (table) = get_label_location(committed_data_powers);
+        return (high=0, low=table[bit]);
+    }
+    let (table) = get_label_location(committed_data_powers);
+    return (high=table[bit - 128], low=0);
+}
+
+// Every requested key is checked against an authenticated leaf. Indices may repeat, so repeated
+// requests retain their order without repeating either leaf hashing or membership verification.
+func committed_data_batch_values{range_check_ptr}(
+    keys: felt*,
+    count: felt,
+    leaves: felt*,
+    leaf_count: felt,
+    indices: felt*,
+    values: felt*,
+    next_leaf: felt,
+) {
     if (count == 0) {
-        return (gas=remaining_gas, error=0);
+        assert next_leaf = leaf_count;
+        return ();
     }
-    let (value, gas, error) = committed_data_read_one(root, keys[0], remaining_gas);
-    if (error != 0) {
-        return (gas=gas, error=error);
+    let index = indices[0];
+    assert_nn(index);
+    assert_nn(leaf_count - index - 1);
+    assert leaves[2 * index] = keys[0];
+    assert values[0] = leaves[2 * index + 1];
+    // First occurrences introduce consecutive leaf indices. Other occurrences may only reuse
+    // an already introduced leaf. The terminal equality proves every supplied leaf was requested.
+    if (index == next_leaf) {
+        return committed_data_batch_values(
+            keys + 1, count - 1, leaves, leaf_count, indices + 1, values + 1, next_leaf + 1
+        );
     }
+    assert_nn(next_leaf - index - 1);
+    return committed_data_batch_values(
+        keys + 1, count - 1, leaves, leaf_count, indices + 1, values + 1, next_leaf
+    );
+}
+
+func verify_committed_data_batch{
+    range_check_ptr, poseidon_ptr: PoseidonBuiltin*, bitwise_ptr: BitwiseBuiltin*
+}(
+    root: felt,
+    keys: felt*,
+    count: felt,
+    proof: felt*,
+    leaves: felt*,
+    indices: felt*,
+    branch_count: felt,
+    leaf_count: felt,
+    values: felt*,
+) {
+    alloc_locals;
+    assert_nn(count - 1);
+    assert_nn(MAX_COMMITTED_DATA_READ_KEYS - count);
+    assert_nn(branch_count);
+    assert_nn(count * COMMITTED_DATA_TREE_HEIGHT - branch_count);
+    assert_nn(leaf_count - 1);
+    assert_nn(count - leaf_count);
+    let branches_left = branch_count;
+    let leaves_left = leaf_count;
+    with proof, branches_left, leaves_left {
+        let (hash, used) = committed_data_batch_node(
+            leaves, leaf_count, COMMITTED_DATA_TREE_HEIGHT, 0, 0, 0, 0
+        );
+        assert used = leaf_count;
+        assert hash = root;
+        assert branches_left = 0;
+        assert leaves_left = 0;
+    }
+    committed_data_batch_values(keys, count, leaves, leaf_count, indices, values, 0);
+    return ();
+}
+
+// Counts are verified before the gas comparison: the hint cannot invent a more expensive proof
+// to force an out-of-gas response. Failed calls reserve the full bounded verification work.
+func committed_data_read_batch{
+    range_check_ptr, poseidon_ptr: PoseidonBuiltin*, bitwise_ptr: BitwiseBuiltin*
+}(
+    committed_data_root: felt,
+    committed_data_keys: felt*,
+    committed_data_count: felt,
+    values: felt*,
+    remaining_gas: felt,
+) -> (gas: felt, error: felt) {
+    alloc_locals;
+    local committed_data_proof: felt*;
+    local committed_data_leaves: felt*;
+    local committed_data_indices: felt*;
+    local committed_data_branch_count;
+    local committed_data_leaf_count;
+    %{ LoadCommittedDataBatch %}
+    verify_committed_data_batch(
+        committed_data_root,
+        committed_data_keys,
+        committed_data_count,
+        committed_data_proof,
+        committed_data_leaves,
+        committed_data_indices,
+        committed_data_branch_count,
+        committed_data_leaf_count,
+        values,
+    );
+    let steps = 1000 + 70 * committed_data_count + 200 * committed_data_leaf_count + 200 *
+        committed_data_branch_count - COMMITTED_DATA_CALL_CONTRACT_STEPS;
+    let range_checks = 30 + 4 * committed_data_count + 12 * committed_data_leaf_count + 6 *
+        committed_data_branch_count - COMMITTED_DATA_CALL_CONTRACT_RANGE_CHECKS;
+    let poseidons = 2 * (committed_data_branch_count + committed_data_leaf_count);
+    let bitwise = 2 * committed_data_leaf_count;
+    local charge = steps * STEP_SIERRA_GAS + range_checks * RANGE_CHECK_SIERRA_GAS + poseidons *
+        POSEIDON_SIERRA_GAS + bitwise * BITWISE_SIERRA_GAS;
+    let gas_sufficient = is_le_felt(charge, remaining_gas);
+    if (gas_sufficient == 0) {
+        return (gas=remaining_gas, error=ERROR_OUT_OF_GAS);
+    }
+    assert_nn(remaining_gas - charge);
+    return (gas=remaining_gas - charge, error=0);
+}
+
+// Both branches return the same builtin pointers and gas/error shape.
+func committed_data_dispatch{
+    range_check_ptr, poseidon_ptr: PoseidonBuiltin*, bitwise_ptr: BitwiseBuiltin*
+}(root: felt, keys: felt*, count: felt, values: felt*, gas: felt, batch: felt) -> (
+    gas: felt, error: felt
+) {
+    if (batch != 0) {
+        return committed_data_read_batch(root, keys, count, values, gas);
+    }
+    let (value, gas, error) = committed_data_read_one(root, keys[0], gas);
     assert values[0] = value;
-    return committed_data_read_many(root, keys + 1, count - 1, values + 1, gas);
+    return (gas=gas, error=error);
 }
 
 func execute_committed_data_call{
@@ -168,7 +363,6 @@ func execute_committed_data_call{
     local keys: felt*;
     local count;
     local batch;
-    local read_gas;
     local read_range_check_ptr;
     if (request.selector == COMMITTED_DATA_GET_VALUE_SELECTOR) {
         if (request.calldata_end != request.calldata_start + 2) {
@@ -178,7 +372,6 @@ func execute_committed_data_call{
         assert keys = request.calldata_start + 1;
         assert count = 1;
         assert batch = 0;
-        assert read_gas = remaining_gas;
         assert read_range_check_ptr = range_check_ptr;
     } else {
         if (request.selector != COMMITTED_DATA_GET_VALUES_SELECTOR) {
@@ -200,27 +393,16 @@ func execute_committed_data_call{
         assert count = length - 2;
         assert keys = request.calldata_start + 2;
         assert batch = 1;
-        // Restore the ordinary-call allowance for all keys except the first. Measured batch
-        // iteration and return-copy work fit within the existing single-read resource bounds.
-        let overhead = (count - 1) * (
-            COMMITTED_DATA_CALL_CONTRACT_STEPS * STEP_SIERRA_GAS +
-            COMMITTED_DATA_CALL_CONTRACT_RANGE_CHECKS * RANGE_CHECK_SIERRA_GAS
-        );
-        let gas_sufficient = is_le_felt(overhead, remaining_gas);
-        if (gas_sufficient == 0) {
-            committed_data_failure(remaining_gas, ERROR_OUT_OF_GAS);
-            return ();
-        }
-        assert read_gas = remaining_gas - overhead;
         assert read_range_check_ptr = range_check_ptr;
     }
     let range_check_ptr = read_range_check_ptr;
     let (local values) = alloc();
     let selectable_builtins = &builtin_ptrs.selectable;
     let poseidon_ptr = selectable_builtins.poseidon;
-    with poseidon_ptr {
-        let (local gas, local error) = committed_data_read_many(
-            request.calldata_start[0], keys, count, values, read_gas
+    let bitwise_ptr = selectable_builtins.bitwise;
+    with poseidon_ptr, bitwise_ptr {
+        let (local gas, local error) = committed_data_dispatch(
+            request.calldata_start[0], keys, count, values, remaining_gas, batch
         );
     }
     tempvar builtin_ptrs = new BuiltinPointers(
@@ -228,7 +410,7 @@ func execute_committed_data_call{
             pedersen=selectable_builtins.pedersen,
             range_check=selectable_builtins.range_check,
             ecdsa=selectable_builtins.ecdsa,
-            bitwise=selectable_builtins.bitwise,
+            bitwise=bitwise_ptr,
             ec_op=selectable_builtins.ec_op,
             poseidon=poseidon_ptr,
             segment_arena=selectable_builtins.segment_arena,
@@ -331,6 +513,70 @@ dw 1152921504606846976;
 dw 2305843009213693952;
 dw 4611686018427387904;
 dw 9223372036854775808;
+dw 18446744073709551616;
+dw 36893488147419103232;
+dw 73786976294838206464;
+dw 147573952589676412928;
+dw 295147905179352825856;
+dw 590295810358705651712;
+dw 1180591620717411303424;
+dw 2361183241434822606848;
+dw 4722366482869645213696;
+dw 9444732965739290427392;
+dw 18889465931478580854784;
+dw 37778931862957161709568;
+dw 75557863725914323419136;
+dw 151115727451828646838272;
+dw 302231454903657293676544;
+dw 604462909807314587353088;
+dw 1208925819614629174706176;
+dw 2417851639229258349412352;
+dw 4835703278458516698824704;
+dw 9671406556917033397649408;
+dw 19342813113834066795298816;
+dw 38685626227668133590597632;
+dw 77371252455336267181195264;
+dw 154742504910672534362390528;
+dw 309485009821345068724781056;
+dw 618970019642690137449562112;
+dw 1237940039285380274899124224;
+dw 2475880078570760549798248448;
+dw 4951760157141521099596496896;
+dw 9903520314283042199192993792;
+dw 19807040628566084398385987584;
+dw 39614081257132168796771975168;
+dw 79228162514264337593543950336;
+dw 158456325028528675187087900672;
+dw 316912650057057350374175801344;
+dw 633825300114114700748351602688;
+dw 1267650600228229401496703205376;
+dw 2535301200456458802993406410752;
+dw 5070602400912917605986812821504;
+dw 10141204801825835211973625643008;
+dw 20282409603651670423947251286016;
+dw 40564819207303340847894502572032;
+dw 81129638414606681695789005144064;
+dw 162259276829213363391578010288128;
+dw 324518553658426726783156020576256;
+dw 649037107316853453566312041152512;
+dw 1298074214633706907132624082305024;
+dw 2596148429267413814265248164610048;
+dw 5192296858534827628530496329220096;
+dw 10384593717069655257060992658440192;
+dw 20769187434139310514121985316880384;
+dw 41538374868278621028243970633760768;
+dw 83076749736557242056487941267521536;
+dw 166153499473114484112975882535043072;
+dw 332306998946228968225951765070086144;
+dw 664613997892457936451903530140172288;
+dw 1329227995784915872903807060280344576;
+dw 2658455991569831745807614120560689152;
+dw 5316911983139663491615228241121378304;
+dw 10633823966279326983230456482242756608;
+dw 21267647932558653966460912964485513216;
+dw 42535295865117307932921825928971026432;
+dw 85070591730234615865843651857942052864;
+dw 170141183460469231731687303715884105728;
 
 // Same sponge, padding and output as poseidon_hash_many([a, b, c]).
 func committed_data_hash3{poseidon_ptr: PoseidonBuiltin*}(a: felt, b: felt, c: felt) -> (

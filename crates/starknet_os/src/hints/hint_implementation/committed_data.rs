@@ -37,3 +37,47 @@ pub(crate) fn load_committed_data_witness<S: StateReader>(
     ctx.insert_value(Ids::CommittedDataHeight, witness.siblings.len())?;
     Ok(())
 }
+
+/// Merge the requested paths for this call only. Cairo verifies the minimal union, request mapping,
+/// and work counts; the hint does not authorize values or determine an unconstrained fee.
+pub(crate) fn load_committed_data_batch<S: StateReader>(
+    hp: &mut SnosHintProcessor<'_, S>,
+    mut ctx: HintContext<'_>,
+) -> OsHintResult {
+    use blockifier::execution::syscalls::committed_data::{
+        CommittedDataBatchProof,
+        MAX_COMMITTED_DATA_READ_KEYS,
+    };
+    use cairo_vm::hint_processor::hint_processor_utils::felt_to_usize;
+    let root = ctx.get_integer(Ids::CommittedDataRoot)?;
+    let count = felt_to_usize(&ctx.get_integer(Ids::CommittedDataCount)?)?;
+    if !(1..=MAX_COMMITTED_DATA_READ_KEYS).contains(&count) {
+        return Err(OsHintError::AssertionFailed {
+            message: "Invalid committed-data batch size".into(),
+        });
+    }
+    let keys_ptr = ctx.get_ptr(Ids::CommittedDataKeys)?;
+    let keys = (0..count)
+        .map(|index| Ok(*ctx.vm.get_integer((keys_ptr + index)?)?))
+        .collect::<Result<Vec<_>, OsHintError>>()?;
+    let batch = CommittedDataBatchProof::new(root, &keys, |key| {
+        Ok(hp.committed_data_witness(root, key).cloned())
+    })
+    .map_err(|error| OsHintError::AssertionFailed { message: error.to_string() })?;
+    ctx.insert_value(Ids::CommittedDataBranchCount, batch.branches)?;
+    ctx.insert_value(Ids::CommittedDataLeafCount, batch.unique_leaves())?;
+    for (id, data) in [
+        (Ids::CommittedDataProof, batch.proof),
+        (Ids::CommittedDataLeaves, batch.leaves),
+        (
+            Ids::CommittedDataIndices,
+            batch.indices.into_iter().map(starknet_types_core::felt::Felt::from).collect(),
+        ),
+    ] {
+        let ptr = ctx.vm.add_memory_segment();
+        let data: Vec<MaybeRelocatable> = data.into_iter().map(Into::into).collect();
+        ctx.vm.load_data(ptr, &data)?;
+        ctx.insert_value(id, ptr)?;
+    }
+    Ok(())
+}

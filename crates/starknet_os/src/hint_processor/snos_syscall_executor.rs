@@ -191,7 +191,8 @@ impl<S: StateReader> SyscallExecutor for SnosHintProcessor<'_, S> {
                 return Err(invalid("committed-data reads require use_committed_data=true").into());
             }
             use blockifier::execution::syscalls::committed_data::{
-                batch_overhead_gas,
+                CommittedDataBatchProof,
+                batch_gas,
                 read_gas,
                 read_keys,
             };
@@ -201,24 +202,28 @@ impl<S: StateReader> SyscallExecutor for SnosHintProcessor<'_, S> {
                     blockifier::execution::syscalls::hint_processor::OUT_OF_GAS_ERROR_FELT,
                 ],
             };
-            if batch {
+            let root = request.calldata.0[0];
+            let values: Vec<MaybeRelocatable> = if batch {
+                let proof = CommittedDataBatchProof::new(root, keys, |key| {
+                    Ok(syscall_handler.committed_data_witness(root, key).cloned())
+                })
+                .map_err(|error| invalid(&error.to_string()))?;
                 *remaining_gas = remaining_gas
-                    .checked_sub(batch_overhead_gas(keys.len()))
+                    .checked_sub(batch_gas(keys.len(), proof.unique_leaves(), proof.branches))
                     .ok_or_else(out_of_gas)?;
-            }
-            let mut values = Vec::with_capacity(keys.len() + usize::from(batch));
-            if batch {
-                values.push(MaybeRelocatable::from(Felt::from(keys.len())));
-            }
-            for key in keys {
+                std::iter::once(Felt::from(keys.len()))
+                    .chain(proof.indices.iter().map(|index| proof.leaves[2 * index + 1]))
+                    .map(MaybeRelocatable::from)
+                    .collect()
+            } else {
                 let witness = syscall_handler
-                    .committed_data_witness(request.calldata.0[0], *key)
+                    .committed_data_witness(root, keys[0])
                     .ok_or_else(|| invalid("committed_data witness unavailable"))?;
                 *remaining_gas = remaining_gas
                     .checked_sub(read_gas(witness.siblings.len()))
                     .ok_or_else(out_of_gas)?;
-                values.push(MaybeRelocatable::from(witness.value));
-            }
+                vec![witness.value.into()]
+            };
             // Cairo independently constrains every returned value, order and gas charge.
             let start_ptr = vm.add_memory_segment();
             vm.load_data(start_ptr, &values)?;

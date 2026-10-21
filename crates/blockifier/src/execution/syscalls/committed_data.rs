@@ -24,6 +24,8 @@ use super::vm_syscall_utils::SyscallExecutorBaseError;
 /// `starknet_keccak("committed_data_v1")`. Permanently reserved by this OS version.
 pub const COMMITTED_DATA_ADDRESS: Felt =
     Felt::from_hex_unchecked("0x6c5f4559c7041984537bc078c71443fdc58b2e1bab302b341ec12b3d2cec44");
+mod batch;
+pub use batch::CommittedDataBatchProof;
 mod mpt;
 pub use mpt::*;
 /// Bound on distinct witnesses supplied to one replay request.
@@ -40,6 +42,7 @@ const CALL_CONTRACT_RANGE_CHECKS: usize = 18;
 const STEP_SIERRA_GAS: u64 = 100;
 const RANGE_CHECK_SIERRA_GAS: u64 = 70;
 const POSEIDON_SIERRA_GAS: u64 = 491;
+const BITWISE_SIERRA_GAS: u64 = 583;
 
 fn read_steps(height: usize) -> usize {
     (READ_STEPS_BASE + READ_STEPS_PER_LEVEL * height).saturating_sub(CALL_CONTRACT_STEPS)
@@ -92,30 +95,38 @@ pub fn read_keys(
     Err(SyscallExecutorBaseError::Revert { error_data: vec![INVALID_ARGUMENT_FELT] })
 }
 
-/// Restore the ordinary-call allowance subtracted by each single-key charge except the first.
-/// Full-OS batch tests include loop/copy work within each existing single-read allowance.
-/// Batches still verify independent membership paths; no per-proof discount is applied.
-pub fn batch_overhead_resources(
+/// Extra resources for one minimal batch multiproof. `branches` counts the union of paths;
+/// `unique` counts authenticated leaves; `count` includes duplicate returned values. The ordinary
+/// CallContract allowance is credited once. Cairo independently constrains these work counts.
+pub fn batch_os_resources(
     count: usize,
+    unique: usize,
+    branches: usize,
 ) -> cairo_vm::vm::runners::cairo_runner::ExecutionResources {
     use cairo_vm::types::builtin_name::BuiltinName;
     cairo_vm::vm::runners::cairo_runner::ExecutionResources {
-        n_steps: count.saturating_sub(1) * CALL_CONTRACT_STEPS,
+        n_steps: 1000 + 70 * count + 200 * unique + 200 * branches - CALL_CONTRACT_STEPS,
         n_memory_holes: 0,
-        builtin_instance_counter: std::collections::BTreeMap::from([(
-            BuiltinName::range_check,
-            count.saturating_sub(1) * CALL_CONTRACT_RANGE_CHECKS,
-        )]),
+        builtin_instance_counter: std::collections::BTreeMap::from([
+            (
+                BuiltinName::range_check,
+                30 + 4 * count + 12 * unique + 6 * branches - CALL_CONTRACT_RANGE_CHECKS,
+            ),
+            (BuiltinName::poseidon, 2 * (branches + unique)),
+            (BuiltinName::bitwise, 2 * unique),
+        ]),
     }
 }
 
-/// Sierra charge for the batch wrapper, matching the reserved OS resources.
-pub fn batch_overhead_gas(count: usize) -> u64 {
-    let resources = batch_overhead_resources(count);
+/// Sierra charge for the same bounded resources that admission reserves for the OS.
+pub fn batch_gas(count: usize, unique: usize, branches: usize) -> u64 {
+    use cairo_vm::types::builtin_name::BuiltinName;
+    let resources = batch_os_resources(count, unique, branches);
     resources.n_steps as u64 * STEP_SIERRA_GAS
-        + resources.builtin_instance_counter
-            [&cairo_vm::types::builtin_name::BuiltinName::range_check] as u64
+        + resources.builtin_instance_counter[&BuiltinName::range_check] as u64
             * RANGE_CHECK_SIERRA_GAS
+        + resources.builtin_instance_counter[&BuiltinName::poseidon] as u64 * POSEIDON_SIERRA_GAS
+        + resources.builtin_instance_counter[&BuiltinName::bitwise] as u64 * BITWISE_SIERRA_GAS
 }
 
 /// Shared VM/native dispatch. A batch fails as a whole; no partial values are returned.
@@ -143,45 +154,47 @@ pub fn read_values(
         .map(|(value, height)| (vec![value], read_os_resources(height)));
     }
     let (keys, batch) = read_keys(selector, calldata)?;
-    let mut resources =
-        if batch { batch_overhead_resources(keys.len()) } else { Default::default() };
-    if batch {
-        *remaining_gas =
-            remaining_gas.checked_sub(batch_overhead_gas(keys.len())).ok_or_else(|| {
-                SyscallExecutorBaseError::Revert { error_data: vec![OUT_OF_GAS_ERROR_FELT] }
-            })?;
-    }
-    let mut values = Vec::with_capacity(keys.len() + usize::from(batch));
-    if batch {
-        values.push(Felt::from(keys.len()));
-    }
-    for key in keys {
-        let (value, height) = read_value(
+    if !batch {
+        return read_value(
             true,
             witnesses,
-            selector_from_name("get_value").0,
-            &[calldata[0], *key],
+            selector,
+            calldata,
             remaining_gas,
             availability_failure,
-        )?;
-        resources += &read_os_resources(height);
-        values.push(value);
+        )
+        .map(|(value, height)| (vec![value], read_os_resources(height)));
     }
-    Ok((values, resources))
+    let proof = witnesses.batch(calldata[0], keys).map_err(|error| {
+        let syscall_error = SyscallExecutorBaseError::InvalidSyscallInput {
+            input: selector,
+            info: error.to_string(),
+        };
+        availability_failure.get_or_insert(error);
+        syscall_error
+    })?;
+    let unique = proof.unique_leaves();
+    let charge = batch_gas(keys.len(), unique, proof.branches);
+    *remaining_gas = remaining_gas.checked_sub(charge).ok_or_else(|| {
+        SyscallExecutorBaseError::Revert { error_data: vec![OUT_OF_GAS_ERROR_FELT] }
+    })?;
+    let mut values = Vec::with_capacity(keys.len() + 1);
+    values.push(Felt::from(keys.len()));
+    values.extend(proof.indices.iter().map(|index| proof.leaves[2 * index + 1]));
+    Ok((values, batch_os_resources(keys.len(), unique, proof.branches)))
 }
 
-/// Failed calls reserve the bounded worst case, including work before an out-of-gas failure.
+/// Failed calls reserve the bounded worst case, including proof verification before out-of-gas.
 pub fn failed_read_resources(
     selector: Felt,
     calldata: &[Felt],
 ) -> cairo_vm::vm::runners::cairo_runner::ExecutionResources {
-    let (count, batch) =
-        read_keys(selector, calldata).map_or((1, false), |(keys, batch)| (keys.len(), batch));
-    let mut resources = if batch { batch_overhead_resources(count) } else { Default::default() };
-    for _ in 0..count {
-        resources += &read_os_resources(COMMITTED_DATA_TREE_HEIGHT);
+    match read_keys(selector, calldata) {
+        Ok((keys, true)) => {
+            batch_os_resources(keys.len(), keys.len(), keys.len() * COMMITTED_DATA_TREE_HEIGHT)
+        }
+        _ => read_os_resources(COMMITTED_DATA_TREE_HEIGHT),
     }
-    resources
 }
 
 /// Failures of execution permission, dataset authentication or witness lookup.
@@ -215,6 +228,12 @@ pub struct CommittedDataWitnesses {
 /// Providers authenticate immutable datasets against the exact root before returning values.
 /// The OS never trusts this trait: it separately constrains the witness and syscall response.
 pub trait CommittedDataProvider: std::fmt::Debug + Send + Sync {
+    /// Authenticate the exact requested path union, reusing cached trie nodes when available.
+    fn batch(
+        &self,
+        root: Felt,
+        keys: &[Felt],
+    ) -> Result<CommittedDataBatchProof, CommittedDataError>;
     fn value(&self, root: Felt, key: Felt) -> Result<Option<(Felt, usize)>, CommittedDataError>;
 }
 
@@ -257,6 +276,19 @@ impl CommittedDataWitnesses {
             return Err(CommittedDataError::InvalidWitness);
         }
         Ok(value)
+    }
+
+    pub fn batch(
+        &self,
+        root: Felt,
+        keys: &[Felt],
+    ) -> Result<CommittedDataBatchProof, CommittedDataError> {
+        match &self.provider {
+            Some(provider) => provider.batch(root, keys),
+            None => {
+                CommittedDataBatchProof::new(root, keys, |key| Ok(self.get(root, key).cloned()))
+            }
+        }
     }
 
     pub fn get(&self, root: Felt, index: Felt) -> Option<&CommittedDataWitness> {
@@ -364,7 +396,7 @@ mod tests {
         .unwrap();
         let selector = selector_from_name("get_values").0;
         let calldata = [tree.root(), Felt::from(3), Felt::MAX, Felt::ZERO, Felt::MAX];
-        let charge = batch_overhead_gas(3) + 3 * read_gas(1);
+        let charge = batch_gas(3, 2, 1);
         let mut gas = charge;
         let mut failure = None;
         let (values, resources) =
@@ -380,6 +412,7 @@ mod tests {
         assert!(
             read_values(true, &witnesses, selector, &calldata, &mut gas, &mut failure).is_err()
         );
+        assert_eq!(gas, charge - 1, "failed batch must not debit a partial charge");
         assert!(failure.is_none()); // OOG is a contract revert, not missing private data.
         gas = charge;
         assert!(
