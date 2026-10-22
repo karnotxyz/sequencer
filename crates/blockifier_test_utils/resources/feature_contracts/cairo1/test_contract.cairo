@@ -88,6 +88,20 @@ mod TestContract {
         syscalls::storage_write_syscall(0, 46.try_into().unwrap(), *price.at(0)).unwrap_syscall();
     }
 
+    #[external(v0)]
+    fn test_committed_data_catch(self: @ContractState, root: felt252, keys: Span<felt252>, expect_error: bool, rounds: u32) {
+        let mut args = array![root, keys.len().into()];
+        for key in keys { args.append(*key); }
+        let mut round = 0;
+        while round < rounds {
+        let result = syscalls::call_contract_syscall(
+            selector!("committed_data_v1").try_into().unwrap(), selector!("get_values"), args.span(),
+        );
+        assert(result.is_err() == expect_error, 'expected call outcome');
+        round += 1;
+        };
+    }
+
     // TODO(Dori): Delete this function, use `test` instead.
     #[external(v0)]
     fn test_increment(

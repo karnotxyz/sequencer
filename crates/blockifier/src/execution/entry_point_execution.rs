@@ -523,6 +523,7 @@ pub fn finalize_execution(
         storage_access_tracker: syscall_handler_base.storage_access_tracker,
         builtin_counters: extended_resources_without_inner_calls.prover_cairo_primitives(),
         syscalls_usage: syscall_handler_base.syscalls_usage,
+        unpaid_committed_data_resources: syscall_handler_base.unpaid_committed_data_resources,
     })
 }
 

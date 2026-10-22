@@ -546,7 +546,7 @@ impl SyscallExecutor for SyscallHintProcessor<'_> {
                 |_| super::committed_data::failed_read_resources(selector.0, &request.calldata.0),
                 |(_, resources)| resources.clone(),
             );
-            syscall_handler.base.account_committed_data_read(&resources);
+            syscall_handler.base.account_committed_data_read(&resources, result.is_err());
             let (values, _) = result?;
             let segment = create_retdata_segment(vm, syscall_handler, &values)?;
             return Ok(CallContractResponse { segment });

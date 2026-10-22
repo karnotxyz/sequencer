@@ -525,7 +525,7 @@ impl StarknetSyscallHandler for &mut NativeSyscallHandler<'_> {
                 },
                 |(_, resources)| resources.clone(),
             );
-            self.base.account_committed_data_read(&resources);
+            self.base.account_committed_data_read(&resources, result.is_err());
             let (values, _) = result.map_err(|e| self.handle_error(remaining_gas, e.into()))?;
             log::debug!(
                 target: "committed_data_native",

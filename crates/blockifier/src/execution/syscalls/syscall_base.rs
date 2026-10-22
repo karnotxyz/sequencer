@@ -92,6 +92,9 @@ pub struct SyscallHandlerBase<'state> {
     /// OS work for the versioned extension, including calls later reverted by their parent.
     pub committed_data_resources: cairo_vm::vm::runners::cairo_runner::ExecutionResources,
 
+    /// Proof work not covered by gas on a failed Sierra-tracked call. Admission only.
+    pub unpaid_committed_data_resources: cairo_vm::vm::runners::cairo_runner::ExecutionResources,
+
     revert_info_idx: usize,
 }
 
@@ -99,11 +102,20 @@ impl<'state> SyscallHandlerBase<'state> {
     pub fn account_committed_data_read(
         &mut self,
         resources: &cairo_vm::vm::runners::cairo_runner::ExecutionResources,
+        failed: bool,
     ) {
         if self.context.tracked_resource_stack.last()
             == Some(&crate::execution::contract_class::TrackedResource::CairoSteps)
         {
             self.context.subtract_steps(resources.n_steps);
+        }
+        // CairoSteps calls already account for this through their explicit VM resources.
+        // Sierra calls need a separate reservation when verification precedes a failed debit.
+        if failed
+            && self.context.tracked_resource_stack.last()
+                == Some(&crate::execution::contract_class::TrackedResource::SierraGas)
+        {
+            self.unpaid_committed_data_resources += resources;
         }
         self.committed_data_resources += resources;
     }
@@ -133,6 +145,7 @@ impl<'state> SyscallHandlerBase<'state> {
             original_values,
             syscalls_usage: SyscallUsageMap::new(),
             committed_data_resources: Default::default(),
+            unpaid_committed_data_resources: Default::default(),
             revert_info_idx,
         }
     }

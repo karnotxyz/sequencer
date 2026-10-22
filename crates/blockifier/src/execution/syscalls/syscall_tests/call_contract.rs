@@ -787,9 +787,48 @@ fn committed_data_batch_dispatch_returns_values_in_order(runnable: RunnableCairo
     assert!(!info.execution.failed);
     info.check_native_execution(runnable.is_cairo_native());
     assert!(info.execution.gas_consumed >= batch_gas(3, 2, 1));
+    assert_eq!(info.unpaid_committed_data_resources, Default::default());
     for (builtin, minimum) in batch_os_resources(3, 2, 1).builtin_instance_counter {
         assert!(info.builtin_counters.get(&builtin.into()).copied().unwrap_or_default() >= minimum);
     }
     // The compiled fixture forwards the special call's length-prefixed return data.
     assert_eq!(info.execution.retdata.0, vec![Felt::from(3), Felt::ZERO, Felt::MAX, Felt::ZERO]);
+}
+
+#[cfg_attr(feature = "cairo_native", test_case(RunnableCairo1::Native; "native"))]
+#[test_case(RunnableCairo1::Casm; "vm")]
+fn committed_data_caught_out_of_gas_preserves_unpaid_proof_resources(runnable: RunnableCairo1) {
+    use starknet_types_core::felt::Felt;
+
+    use crate::execution::syscalls::committed_data::{
+        batch_os_resources,
+        CommittedDataSet,
+        CommittedDataWitnesses,
+        COMMITTED_DATA_TREE_HEIGHT,
+    };
+    let contract = FeatureContract::TestContract(CairoVersion::Cairo1(runnable));
+    let mut entries = vec![(Felt::ZERO, Felt::ZERO)];
+    for bit in 0..COMMITTED_DATA_TREE_HEIGHT {
+        let mut bytes = [0_u8; 32];
+        bytes[31 - bit / 8] = 1 << (bit % 8);
+        entries.push((Felt::from_bytes_be(&bytes), Felt::from(bit)));
+    }
+    let tree = CommittedDataSet::new(entries).unwrap();
+    let mut state = test_state(&ChainInfo::create_for_testing(), BALANCE, &[(contract, 1)]);
+    let mut context = BlockContext::create_for_testing();
+    context.use_committed_data = true;
+    context.committed_data_witnesses =
+        Arc::new(CommittedDataWitnesses::new(vec![tree.witness(Felt::ZERO).unwrap()]).unwrap());
+    let call = CallEntryPoint {
+        entry_point_selector: selector_from_name("test_committed_data_catch"),
+        calldata: calldata_macro![tree.root(), Felt::ONE, Felt::ZERO, Felt::ONE, Felt::from(3)],
+        initial_gas: 4_000_000,
+        ..trivial_external_entry_point_new(contract)
+    };
+    let info = call.execute_directly_given_block_context(&mut state, context).unwrap();
+    assert!(!info.execution.failed, "the caller must catch all three inner failures");
+    info.check_native_execution(runnable.is_cairo_native());
+    assert_eq!(info.tracked_resource, TrackedResource::SierraGas);
+    let expected = &batch_os_resources(1, 1, COMMITTED_DATA_TREE_HEIGHT) * 3;
+    assert_eq!(info.unpaid_committed_data_resources, expected);
 }

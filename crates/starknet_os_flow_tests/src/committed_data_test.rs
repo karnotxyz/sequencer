@@ -508,7 +508,7 @@ async fn committed_data_batches_match_os_and_bound_resources() {
     let mut calls = Vec::new();
     collect_profiled_committed_data_calls(&trace, &mut calls);
     assert_eq!(calls.len(), cases.len());
-    let mut measured_steps = output.runner_output.cairo_pie.execution_resources.n_memory_holes;
+    let mut measured_steps = 0;
     let mut reserved_steps = 0;
     for (actual, (_, keys, unique, branches)) in calls.iter().zip(cases) {
         let count = keys.len();
@@ -532,5 +532,20 @@ async fn committed_data_batches_match_os_and_bound_resources() {
             );
         }
     }
-    assert!(measured_steps <= reserved_steps, "batch allowance must cover all PIE holes as well");
+    // Per-call profiles omit memory holes. Charge every hole in this entire PIE against
+    // the special-call step headroom, using the protocol weights (holes are not steps).
+    let costs =
+        blockifier::blockifier_versioned_constants::VersionedConstants::create_for_testing()
+            .os_constants
+            .gas_costs
+            .base
+            .clone();
+    let holes = output.runner_output.cairo_pie.execution_resources.n_memory_holes;
+    let measured =
+        measured_steps as u64 * costs.step_gas_cost + holes as u64 * costs.memory_hole_gas_cost;
+    let reserved = reserved_steps as u64 * costs.step_gas_cost;
+    eprintln!(
+        "batch step gas plus all PIE holes: {measured}, reserved: {reserved}, holes: {holes}"
+    );
+    assert!(measured <= reserved, "batch step allowance must cover all PIE memory-hole gas");
 }

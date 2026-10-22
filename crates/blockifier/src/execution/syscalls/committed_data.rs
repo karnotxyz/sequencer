@@ -98,6 +98,10 @@ pub fn read_keys(
 /// Extra resources for one minimal batch multiproof. `branches` counts the union of paths;
 /// `unique` counts authenticated leaves; `count` includes duplicate returned values. The ordinary
 /// CallContract allowance is credited once. Cairo independently constrains these work counts.
+/// The step allowance covers dispatch, every output (including duplicates), authenticated leaves
+/// and expanded branches separately. Full-OS tests include maximal paths and price every PIE
+/// memory hole against the remaining step allowance. Hash/bitwise counts are exact; range-check
+/// and step counts remain upper bounds, not an average-case discount.
 pub fn batch_os_resources(
     count: usize,
     unique: usize,
@@ -105,7 +109,7 @@ pub fn batch_os_resources(
 ) -> cairo_vm::vm::runners::cairo_runner::ExecutionResources {
     use cairo_vm::types::builtin_name::BuiltinName;
     cairo_vm::vm::runners::cairo_runner::ExecutionResources {
-        n_steps: 1000 + 70 * count + 200 * unique + 200 * branches - CALL_CONTRACT_STEPS,
+        n_steps: 1000 + 60 * count + 160 * unique + 160 * branches - CALL_CONTRACT_STEPS,
         n_memory_holes: 0,
         builtin_instance_counter: std::collections::BTreeMap::from([
             (

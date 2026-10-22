@@ -324,7 +324,8 @@ func committed_data_read_batch{
         committed_data_leaf_count,
         values,
     );
-    let steps = 1000 + 70 * committed_data_count + 200 * committed_data_leaf_count + 200 *
+    // Match Blockifier batch_os_resources, including the output term for duplicate keys.
+    let steps = 1000 + 60 * committed_data_count + 160 * committed_data_leaf_count + 160 *
         committed_data_branch_count - COMMITTED_DATA_CALL_CONTRACT_STEPS;
     let range_checks = 30 + 4 * committed_data_count + 12 * committed_data_leaf_count + 6 *
         committed_data_branch_count - COMMITTED_DATA_CALL_CONTRACT_RANGE_CHECKS;

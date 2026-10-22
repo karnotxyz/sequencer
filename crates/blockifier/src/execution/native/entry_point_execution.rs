@@ -123,6 +123,7 @@ fn create_callinfo(
         tracked_resource: TrackedResource::SierraGas,
         builtin_counters: entry_point_primitive_counters,
         syscalls_usage: syscall_handler.base.syscalls_usage,
+        unpaid_committed_data_resources: syscall_handler.base.unpaid_committed_data_resources,
     })
 }
 
