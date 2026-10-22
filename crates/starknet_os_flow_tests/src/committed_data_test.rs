@@ -549,3 +549,33 @@ async fn committed_data_batches_match_os_and_bound_resources() {
     );
     assert!(measured <= reserved, "batch step allowance must cover all PIE memory-hole gas");
 }
+
+/// Prototype-only regression: the same authenticated data across callers and root rotations.
+#[tokio::test]
+async fn block_sharing_roots_and_callers() {
+    let output = prepare().await.run();
+    output.perform_default_validations();
+    output.runner_output.cairo_pie.run_validity_checks().unwrap();
+}
+
+/// The block anchor changes even when subsequent blocks read identical root/key pairs.
+#[tokio::test]
+async fn block_sharing_two_blocks() {
+    let contract = FeatureContract::TestContract(CairoVersion::Cairo1(RunnableCairo1::Casm));
+    let (mut builder, [reader]) = TestBuilder::create_standard([(contract, calldata![Felt::ZERO, Felt::ZERO])]).await;
+    let w = witness(Felt::from(77u32), 17, 19);
+    builder.initial_state.block_context.use_committed_data = true;
+    builder.os_hints_config.use_committed_data = true;
+    builder.initial_state.block_context.committed_data_witnesses = Arc::new(CommittedDataWitnesses::new(vec![w.clone()]).unwrap());
+    builder.os_hints_config.committed_data_witnesses = vec![w.clone()];
+    for i in 0..2 {
+        if i != 0 { builder.move_to_next_block(); }
+        builder.add_funded_account_invoke(invoke_tx_args! {calldata: create_calldata(reader, "test_storage_write", &[Felt::from(45u32), w.root])});
+        for _ in 0..3 {
+            builder.add_funded_account_invoke(invoke_tx_args! {calldata: create_calldata(reader, "test_committed_data_read", &[w.key,w.value])});
+        }
+    }
+    let output = builder.build().await.run();
+    output.perform_default_validations();
+    output.runner_output.cairo_pie.run_validity_checks().unwrap();
+}

@@ -202,6 +202,7 @@ func execute_call_contract{
             request=request,
             remaining_gas=remaining_gas,
             use_committed_data=block_context.os_global_context.use_committed_data,
+            committed_data_poseidon_start=block_context.committed_data_poseidon_start,
         );
         return ();
     }

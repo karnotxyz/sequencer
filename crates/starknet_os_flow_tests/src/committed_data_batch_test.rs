@@ -44,7 +44,7 @@ fn verify(
         HashMap::new(),
     )?;
     // The program's builtin order is canonical; the function takes poseidon before bitwise.
-    let mut args: Vec<_> = [BuiltinName::range_check, BuiltinName::poseidon, BuiltinName::bitwise]
+    let mut args: Vec<_> = [BuiltinName::range_check, BuiltinName::poseidon, BuiltinName::poseidon, BuiltinName::bitwise]
         .into_iter()
         .map(|name| {
             CairoArg::Single(

@@ -124,6 +124,13 @@ impl From<Scope> for String {
 define_string_enum! {
     #[derive(Copy, Debug, Clone)]
     pub enum Ids {
+        (CachedHash),
+        (CachedIndex),
+        (CommittedDataPoseidonStart),
+        (HashInputA, "a"),
+        (HashInputB, "b"),
+        (HashInputC, "c"),
+        (CommittedPoseidonPtr, "poseidon_ptr"),
         (UseCommittedData),
         (CommittedDataRoot),
         (CommittedDataKey),

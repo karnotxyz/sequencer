@@ -1016,3 +1016,6 @@ pub fn block_context_for_flow_tests(block_number: BlockNumber, use_kzg_da: bool)
         BouncerConfig::max(),
     )
 }
+
+#[path = "block_sharing_snapshot.rs"]
+mod block_sharing_snapshot;

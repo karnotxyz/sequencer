@@ -34,7 +34,7 @@ func committed_data_step_charge{range_check_ptr}(height: felt) -> (gas: felt) {
 
 // Leaves bind the complete felt key. Branches bind their critical bit and both child hashes.
 // Root must come from authenticated application state; hints supply evidence only.
-func verify_committed_data_value{range_check_ptr, poseidon_ptr: PoseidonBuiltin*}(
+func verify_committed_data_value{range_check_ptr, committed_data_poseidon_start: PoseidonBuiltin*, poseidon_ptr: PoseidonBuiltin*}(
     root: felt, key: felt, value: felt, siblings: felt*, height: felt
 ) {
     alloc_locals;
@@ -75,7 +75,7 @@ func committed_data_key_bit{range_check_ptr}(high: felt, low: felt, bit: felt) -
     return committed_data_word_bit(high, bit - 128);
 }
 
-func committed_data_path{range_check_ptr, poseidon_ptr: PoseidonBuiltin*}(
+func committed_data_path{range_check_ptr, committed_data_poseidon_start: PoseidonBuiltin*, poseidon_ptr: PoseidonBuiltin*}(
     node: felt, high: felt, low: felt, siblings: felt*, remaining: felt, previous_bit: felt
 ) -> (root: felt) {
     alloc_locals;
@@ -114,7 +114,7 @@ from starkware.cairo.common.alloc import alloc
 from starkware.cairo.common.memcpy import memcpy
 
 // One constrained membership read. Out-of-gas preserves the gas before this read.
-func committed_data_read_one{range_check_ptr, poseidon_ptr: PoseidonBuiltin*}(
+func committed_data_read_one{range_check_ptr, committed_data_poseidon_start: PoseidonBuiltin*, poseidon_ptr: PoseidonBuiltin*}(
     committed_data_root: felt, committed_data_key: felt, remaining_gas: felt
 ) -> (value: felt, gas: felt, error: felt) {
     alloc_locals;
@@ -152,6 +152,7 @@ func committed_data_read_one{range_check_ptr, poseidon_ptr: PoseidonBuiltin*}(
 // directions with two 128-bit masks, then hashes its full key/value exactly once.
 func committed_data_batch_node{
     range_check_ptr,
+    committed_data_poseidon_start: PoseidonBuiltin*,
     poseidon_ptr: PoseidonBuiltin*,
     bitwise_ptr: BitwiseBuiltin*,
     proof: felt*,
@@ -261,7 +262,7 @@ func committed_data_batch_values{range_check_ptr}(
 }
 
 func verify_committed_data_batch{
-    range_check_ptr, poseidon_ptr: PoseidonBuiltin*, bitwise_ptr: BitwiseBuiltin*
+    range_check_ptr, committed_data_poseidon_start: PoseidonBuiltin*, poseidon_ptr: PoseidonBuiltin*, bitwise_ptr: BitwiseBuiltin*
 }(
     root: felt,
     keys: felt*,
@@ -298,7 +299,7 @@ func verify_committed_data_batch{
 // Counts are verified before the gas comparison: the hint cannot invent a more expensive proof
 // to force an out-of-gas response. Failed calls reserve the full bounded verification work.
 func committed_data_read_batch{
-    range_check_ptr, poseidon_ptr: PoseidonBuiltin*, bitwise_ptr: BitwiseBuiltin*
+    range_check_ptr, committed_data_poseidon_start: PoseidonBuiltin*, poseidon_ptr: PoseidonBuiltin*, bitwise_ptr: BitwiseBuiltin*
 }(
     committed_data_root: felt,
     committed_data_keys: felt*,
@@ -343,7 +344,7 @@ func committed_data_read_batch{
 
 // Both branches return the same builtin pointers and gas/error shape.
 func committed_data_dispatch{
-    range_check_ptr, poseidon_ptr: PoseidonBuiltin*, bitwise_ptr: BitwiseBuiltin*
+    range_check_ptr, committed_data_poseidon_start: PoseidonBuiltin*, poseidon_ptr: PoseidonBuiltin*, bitwise_ptr: BitwiseBuiltin*
 }(root: felt, keys: felt*, count: felt, values: felt*, gas: felt, batch: felt) -> (
     gas: felt, error: felt
 ) {
@@ -357,7 +358,7 @@ func committed_data_dispatch{
 
 func execute_committed_data_call{
     range_check_ptr, syscall_ptr: felt*, builtin_ptrs: BuiltinPointers*
-}(request: CallContractRequest*, remaining_gas: felt, use_committed_data: felt) {
+}(request: CallContractRequest*, remaining_gas: felt, use_committed_data: felt, committed_data_poseidon_start: PoseidonBuiltin*) {
     alloc_locals;
     assert request.contract_address = COMMITTED_DATA_CONTRACT_ADDRESS;
     assert use_committed_data = 1;
@@ -401,7 +402,7 @@ func execute_committed_data_call{
     let selectable_builtins = &builtin_ptrs.selectable;
     let poseidon_ptr = selectable_builtins.poseidon;
     let bitwise_ptr = selectable_builtins.bitwise;
-    with poseidon_ptr, bitwise_ptr {
+    with poseidon_ptr, bitwise_ptr, committed_data_poseidon_start {
         let (local gas, local error) = committed_data_dispatch(
             request.calldata_start[0], keys, count, values, remaining_gas, batch
         );
@@ -580,9 +581,25 @@ dw 85070591730234615865843651857942052864;
 dw 170141183460469231731687303715884105728;
 
 // Same sponge, padding and output as poseidon_hash_many([a, b, c]).
-func committed_data_hash3{poseidon_ptr: PoseidonBuiltin*}(a: felt, b: felt, c: felt) -> (
+func committed_data_hash3{range_check_ptr, committed_data_poseidon_start: PoseidonBuiltin*, poseidon_ptr: PoseidonBuiltin*}(a: felt, b: felt, c: felt) -> (
     res: felt
 ) {
+    alloc_locals;
+    local cached_hash: PoseidonBuiltin*;
+    local cached_index;
+    %{ ReuseCommittedDataHash %}
+    if (cached_hash != poseidon_ptr) {
+        // Hints select earlier builtin cells; Cairo bounds and aligns both permutations and
+        // checks their inputs. No unverified dictionary value can stand in for a hash.
+        assert_nn(cached_index);
+        assert cached_hash = committed_data_poseidon_start + cached_index * PoseidonBuiltin.SIZE;
+        assert_nn(poseidon_ptr - cached_hash - 2 * PoseidonBuiltin.SIZE);
+        assert cached_hash.input = PoseidonBuiltinState(s0=a, s1=b, s2=0);
+        let state = cached_hash.output;
+        let second = cached_hash + PoseidonBuiltin.SIZE;
+        assert second.input = PoseidonBuiltinState(s0=state.s0 + c, s1=state.s1 + 1, s2=state.s2);
+        return (res=second.output.s0);
+    }
     assert poseidon_ptr.input = PoseidonBuiltinState(s0=a, s1=b, s2=0);
     let state = poseidon_ptr.output;
     let poseidon_ptr = poseidon_ptr + PoseidonBuiltin.SIZE;

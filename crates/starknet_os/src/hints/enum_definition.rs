@@ -38,6 +38,7 @@ use crate::hints::hint_implementation::cairo1_revert::implementation::{
     write_storage_key_for_revert,
 };
 use crate::hints::hint_implementation::committed_data::{
+    reuse_committed_data_hash,
     load_committed_data_batch,
     load_committed_data_witness,
     load_use_committed_data,
@@ -475,6 +476,7 @@ define_hint_enum!(
     StateReader,
     (LoadCommittedDataWitness, load_committed_data_witness),
     (LoadCommittedDataBatch, load_committed_data_batch),
+    (ReuseCommittedDataHash, reuse_committed_data_hash),
     (LoadUseCommittedData, load_use_committed_data),
     (LoadClass, load_class),
     (RelocateSha256Segment, relocate_sha256_segment),

@@ -1,3 +1,4 @@
+from starkware.cairo.common.cairo_builtins import PoseidonBuiltin
 from starkware.cairo.common.math import unsigned_div_rem
 from starkware.cairo.common.registers import get_fp_and_pc
 from starkware.starknet.common.new_syscalls import BlockInfo
@@ -42,6 +43,8 @@ struct OsGlobalContext {
 
 // Represents information that is the same throughout the block.
 struct BlockContext {
+    // Authenticated lower bound for reusing Poseidon instances in this block only.
+    committed_data_poseidon_start: PoseidonBuiltin*,
     os_global_context: OsGlobalContext,
     // Information about the block.
     block_info_for_execute: BlockInfo*,
@@ -54,7 +57,7 @@ struct BlockContext {
 // Returns a BlockContext instance.
 //
 // 'syscall_handler' should be passed as a hint variable.
-func get_block_context{range_check_ptr}(os_global_context: OsGlobalContext*) -> (
+func get_block_context{range_check_ptr, poseidon_ptr: PoseidonBuiltin*}(os_global_context: OsGlobalContext*) -> (
     block_context: BlockContext*
 ) {
     alloc_locals;
@@ -69,6 +72,7 @@ func get_block_context{range_check_ptr}(os_global_context: OsGlobalContext*) -> 
     );
     tempvar block_timestamp_for_validate = divided_block_timestamp * VALIDATE_TIMESTAMP_ROUNDING;
     local block_context: BlockContext = BlockContext(
+        committed_data_poseidon_start=poseidon_ptr,
         os_global_context=[os_global_context],
         block_info_for_execute=block_info,
         block_info_for_validate=new BlockInfo(

@@ -81,3 +81,23 @@ pub(crate) fn load_committed_data_batch<S: StateReader>(
     }
     Ok(())
 }
+
+/// Prototype hint selects existing Poseidon cells; Cairo constrains alignment, range and preimage.
+pub(crate) fn reuse_committed_data_hash<S: StateReader>(hp: &mut SnosHintProcessor<'_, S>, mut ctx: HintContext<'_>) -> OsHintResult {
+    let start = ctx.get_ptr(Ids::CommittedDataPoseidonStart)?;
+    let current = ctx.get_ptr(Ids::CommittedPoseidonPtr)?;
+    let key = (start, ctx.get_integer(Ids::HashInputA)?, ctx.get_integer(Ids::HashInputB)?, ctx.get_integer(Ids::HashInputC)?);
+    let mut cached = *hp.committed_hash_cache.entry(key).or_insert(current);
+    // Fault injection is confined to this disposable prototype. It never changes assertions.
+    if cached != current {
+        match std::env::var("CD_CACHE_TAMPER").as_deref() {
+            Ok("unaligned") => cached = (cached + 1usize)?,
+            Ok("future") => cached = (current + 12usize)?,
+            Ok("wrong-preimage") => cached = (cached + 6usize)?,
+            _ => {},
+        }
+    }
+    ctx.insert_value(Ids::CachedHash, cached)?;
+    ctx.insert_value(Ids::CachedIndex, (cached.offset - start.offset) / 6)?;
+    Ok(())
+}
