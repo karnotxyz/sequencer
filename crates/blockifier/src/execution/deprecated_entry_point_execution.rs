@@ -278,6 +278,7 @@ pub fn finalize_execution(
     syscall_handler.finalize();
 
     Ok(CallInfo {
+        unpaid_committed_data_resources: Default::default(),
         call: call.into(),
         execution: CallExecution {
             retdata: read_execution_retdata(&runner, retdata_size, &retdata_ptr)?,

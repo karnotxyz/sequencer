@@ -318,6 +318,12 @@ func get_os_global_context{
         assert virtual_os_config_hash = starknet_os_config_hash;
     }
 
+    // Execution permission is not chain configuration. Both inputs use the same syscall rules;
+    // false only rejects runs that access the permanently reserved committed-data address.
+    local use_committed_data;
+    %{ LoadUseCommittedData %}
+    assert use_committed_data * use_committed_data = use_committed_data;
+
     // Function pointers.
     let (execute_syscalls_ptr) = get_label_location(label_value=execute_syscalls);
     let (execute_deprecated_syscalls_ptr) = get_execute_deprecated_syscalls_ptr();
@@ -326,6 +332,7 @@ func get_os_global_context{
         starknet_os_config=[starknet_os_config],
         starknet_os_config_hash=starknet_os_config_hash,
         virtual_os_config_hash=virtual_os_config_hash,
+        use_committed_data=use_committed_data,
         compiled_class_facts_bundle=CompiledClassFactsBundle(
             n_compiled_class_facts=n_compiled_class_facts,
             compiled_class_facts=compiled_class_facts,

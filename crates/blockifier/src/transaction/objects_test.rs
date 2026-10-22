@@ -485,3 +485,41 @@ fn execution_info_accumulated_sorted_evnets(#[case] test_args: TestArgs) {
     let events = execution_info.accumulated_sorted_events();
     assert_eq!(events, test_args.test_args_expectation.events());
 }
+
+#[test]
+fn committed_data_unpaid_work_is_reserved_once_without_changing_receipt() {
+    use cairo_vm::vm::runners::cairo_runner::ExecutionResources;
+
+    use crate::transaction::objects::TransactionExecutionInfo;
+    let unpaid = ExecutionResources {
+        n_steps: 400,
+        builtin_instance_counter: [(BuiltinName::poseidon, 3)].into(),
+        ..Default::default()
+    };
+    let info = TransactionExecutionInfo {
+        execute_call_info: Some(CallInfo {
+            unpaid_committed_data_resources: unpaid.clone(),
+            inner_calls: vec![CallInfo {
+                unpaid_committed_data_resources: unpaid.clone(),
+                ..Default::default()
+            }],
+            ..Default::default()
+        }),
+        // Fee-transfer work is accounted for separately by the OS estimates.
+        fee_transfer_call_info: Some(CallInfo {
+            unpaid_committed_data_resources: unpaid.clone(),
+            ..Default::default()
+        }),
+        ..Default::default()
+    };
+    let receipt = info.receipt.resources.clone();
+    assert_eq!(
+        info.bouncer_resources().computation.tx_extended_vm_resources.vm_resources,
+        &unpaid + &unpaid
+    );
+    assert_eq!(info.receipt.resources, receipt);
+    assert!(matches!(
+        TransactionExecutionInfo::default().bouncer_resources(),
+        std::borrow::Cow::Borrowed(_)
+    ));
+}

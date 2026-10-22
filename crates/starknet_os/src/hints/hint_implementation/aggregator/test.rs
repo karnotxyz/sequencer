@@ -28,30 +28,30 @@ use crate::hint_processor::aggregator_hint_processor::{
     DataAvailability,
 };
 use crate::hints::hint_implementation::aggregator::utils::{
-    write_full_os_output,
     FullOsOutputsData,
     FullStateDiffWriter,
+    write_full_os_output,
 };
 use crate::hints::hint_implementation::kzg::utils::{
-    polynomial_coefficients_to_kzg_commitment,
     BLS_PRIME,
+    polynomial_coefficients_to_kzg_commitment,
 };
 use crate::hints::hint_implementation::output::{MAX_PAGE_SIZE, OUTPUT_ATTRIBUTE_FACT_TOPOLOGY};
 use crate::hints::hint_implementation::stateless_compression::utils::compress;
 use crate::io::os_output_types::{
     FullContractChanges,
     FullContractStorageUpdate,
-    TryFromOutputIter,
     N_UPDATES_SMALL_PACKING_BOUND,
+    TryFromOutputIter,
 };
-use crate::runner::{run_program, RunnerReturnObject};
+use crate::runner::{RunnerReturnObject, run_program};
 use crate::test_utils::cairo_runner::{
-    initialize_cairo_runner,
-    run_cairo_0_entrypoint,
     EndpointArg,
     EntryPointRunnerConfig,
     ImplicitArg,
     ValueArg,
+    initialize_cairo_runner,
+    run_cairo_0_entrypoint,
 };
 use crate::test_utils::coverage::expect_hint_coverage;
 use crate::test_utils::validations::validate_builtins;

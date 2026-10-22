@@ -306,6 +306,9 @@ impl SierraGasRevertTracker {
 
 #[derive(Debug)]
 pub struct EntryPointExecutionContext {
+    /// Sticky permission/availability failure; it must never become an accepted transaction revert.
+    pub committed_data_failure:
+        Option<crate::execution::syscalls::committed_data::CommittedDataError>,
     // We use `Arc` to avoid the clone of this potentially large object, as inner calls
     // are created during execution.
     pub tx_context: Arc<TransactionContext>,
@@ -339,6 +342,7 @@ impl EntryPointExecutionContext {
     ) -> Self {
         let max_steps = Self::max_steps(&tx_context, &mode, limit_steps_by_resources);
         Self {
+            committed_data_failure: None,
             vm_run_resources: RunResources::new(max_steps),
             n_emitted_events: 0,
             n_sent_messages_to_l1: 0,

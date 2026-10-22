@@ -124,6 +124,20 @@ impl From<Scope> for String {
 define_string_enum! {
     #[derive(Copy, Debug, Clone)]
     pub enum Ids {
+        (UseCommittedData),
+        (CommittedDataRoot),
+        (CommittedDataKey),
+        (CommittedDataValue),
+        (CommittedDataSiblings),
+        (CommittedDataHeight),
+        (CommittedDataKeys),
+        (CommittedDataCount),
+        (CommittedDataProof),
+        (CommittedDataLeaves),
+        (CommittedDataIndices),
+        (CommittedDataBranchCount),
+        (CommittedDataLeafCount),
+
         (AccountDeploymentData),
         (AccountDeploymentDataSize),
         (ActualOutState),

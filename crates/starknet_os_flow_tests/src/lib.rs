@@ -8,3 +8,6 @@ pub(crate) mod tests;
 pub(crate) mod utils;
 pub(crate) mod virtual_os_test;
 pub(crate) mod virtual_os_test_manager;
+
+mod committed_data_batch_test;
+mod committed_data_test;
