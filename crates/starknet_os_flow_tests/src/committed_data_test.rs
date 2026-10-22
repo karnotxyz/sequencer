@@ -99,14 +99,9 @@ fn collect_profiled_committed_data_calls<'a>(
                     .get("inner_syscalls")
                     .and_then(serde_json::Value::as_array)
                     .is_some_and(Vec::is_empty);
-            let uses_poseidon = object
-                .get("resources")
-                .and_then(|resources| {
-                    resources.pointer("/builtin_instance_counter/poseidon_builtin")
-                })
-                .and_then(serde_json::Value::as_u64)
-                .is_some_and(|count| count > 0);
-            if is_leaf_call && uses_poseidon {
+            // A warm proof may use zero new Poseidon instances. These fixtures contain
+            // only committed-data leaf CallContract syscalls.
+            if is_leaf_call {
                 calls.push(&object["resources"]);
             }
             for value in object.values() {
