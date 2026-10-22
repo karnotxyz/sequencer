@@ -87,7 +87,10 @@ async fn paired_full_trade_snapshot() {
     eprintln!("Initial snapshot committed");
     let mut witnesses: Vec<CommittedDataWitness> = Vec::new();
     for file in std::fs::read_dir(data["witness_directory"].as_str().unwrap()).unwrap() {
-        witnesses.push(serde_json::from_value(read(file.unwrap().path())).unwrap());
+        let path = file.unwrap().path();
+        // macOS archive metadata is not a witness; malformed witness JSON must still fail.
+        if path.file_name().unwrap().to_string_lossy().starts_with("._") { continue; }
+        witnesses.push(serde_json::from_value(read(path)).unwrap());
     }
     let mut context = BlockContext::new(
         BlockInfo {
