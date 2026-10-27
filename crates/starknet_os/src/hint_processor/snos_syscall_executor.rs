@@ -48,8 +48,8 @@ use cairo_vm::vm::errors::vm_errors::VirtualMachineError;
 use cairo_vm::vm::vm_core::VirtualMachine;
 use starknet_api::abi::abi_utils::selector_from_name;
 use starknet_api::execution_resources::GasAmount;
-use starknet_api::transaction::TransactionVersion;
 use starknet_api::transaction::constants::EXECUTE_ENTRY_POINT_NAME;
+use starknet_api::transaction::TransactionVersion;
 use starknet_api::versioned_constants_logic::VersionedConstantsTrait;
 use starknet_types_core::felt::Felt;
 
@@ -57,12 +57,12 @@ use crate::hint_processor::execution_helper::ExecutionHelperError;
 use crate::hint_processor::snos_hint_processor::SnosHintProcessor;
 use crate::hints::vars::CairoStruct;
 use crate::vm_utils::{
-    IdentifierGetter,
-    VmUtilsError,
     get_address_of_nested_fields_from_base_address,
     get_field_offset,
     get_size_of_cairo_struct,
     write_to_temp_segment,
+    IdentifierGetter,
+    VmUtilsError,
 };
 
 #[derive(Debug, thiserror::Error)]
@@ -191,10 +191,10 @@ impl<S: StateReader> SyscallExecutor for SnosHintProcessor<'_, S> {
                 return Err(invalid("committed-data reads require use_committed_data=true").into());
             }
             use blockifier::execution::syscalls::committed_data::{
-                CommittedDataBatchProof,
                 batch_gas,
                 read_gas,
                 read_keys,
+                CommittedDataBatchProof,
             };
             let (keys, batch) = read_keys(request.function_selector.0, &request.calldata.0)?;
             let out_of_gas = || SyscallExecutorBaseError::Revert {
@@ -219,6 +219,9 @@ impl<S: StateReader> SyscallExecutor for SnosHintProcessor<'_, S> {
                 let witness = syscall_handler
                     .committed_data_witness(root, keys[0])
                     .ok_or_else(|| invalid("committed_data witness unavailable"))?;
+                if !witness.verify() {
+                    return Err(invalid("Invalid committed-data membership witness").into());
+                }
                 *remaining_gas = remaining_gas
                     .checked_sub(read_gas(witness.siblings.len()))
                     .ok_or_else(out_of_gas)?;

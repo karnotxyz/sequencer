@@ -124,6 +124,14 @@ func committed_data_read_one{range_check_ptr, poseidon_ptr: PoseidonBuiltin*}(
     %{ LoadCommittedDataWitness %}
     let height_valid = is_le_felt(committed_data_height, COMMITTED_DATA_TREE_HEIGHT);
     assert height_valid = 1;
+    // Authenticate the hinted height before it can select an out-of-gas result.
+    verify_committed_data_value(
+        root=committed_data_root,
+        key=committed_data_key,
+        value=committed_data_value,
+        siblings=committed_data_siblings,
+        height=committed_data_height,
+    );
     let (step_charge) = committed_data_step_charge(committed_data_height);
     let range_check_charge = (
         COMMITTED_DATA_RANGE_CHECK_BOUND_BASE +
@@ -136,13 +144,6 @@ func committed_data_read_one{range_check_ptr, poseidon_ptr: PoseidonBuiltin*}(
     if (gas_sufficient == 0) {
         return (value=0, gas=remaining_gas, error=ERROR_OUT_OF_GAS);
     }
-    verify_committed_data_value(
-        root=committed_data_root,
-        key=committed_data_key,
-        value=committed_data_value,
-        siblings=committed_data_siblings,
-        height=committed_data_height,
-    );
     assert_nn(remaining_gas - charge);
     return (value=committed_data_value, gas=remaining_gas - charge, error=0);
 }

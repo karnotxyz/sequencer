@@ -4,14 +4,14 @@ use std::collections::{BTreeMap, HashMap};
 use starknet_types_core::felt::Felt;
 
 use super::{
-    COMMITTED_DATA_TREE_HEIGHT,
-    CommittedDataError,
-    CommittedDataSet,
-    CommittedDataWitness,
-    MAX_COMMITTED_DATA_READ_KEYS,
     branch,
     key_bit,
     leaf,
+    CommittedDataError,
+    CommittedDataSet,
+    CommittedDataWitness,
+    COMMITTED_DATA_TREE_HEIGHT,
+    MAX_COMMITTED_DATA_READ_KEYS,
 };
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -80,8 +80,9 @@ impl CommittedDataBatchProof {
             leaves.extend([key, witness.value]);
         }
         let mut result = Self { proof: Vec::new(), leaves, indices: Vec::new(), branches: 0 };
-        result.emit(root, COMMITTED_DATA_TREE_HEIGHT, &nodes, &unique)?;
         result.indices = keys.iter().map(|key| unique[key]).collect();
+        let mut requested: Vec<_> = unique.into_iter().collect();
+        result.emit(root, COMMITTED_DATA_TREE_HEIGHT, &nodes, &mut requested)?;
         Ok(result)
     }
 
@@ -147,19 +148,26 @@ impl CommittedDataBatchProof {
         self.leaves.len() / 2
     }
 
-    /// Follow only expanded nodes; untouched subtrees are a single commitment. Strictly decreasing
-    /// critical bits bound recursion even if a supplied path contains inconsistent node references.
+    /// Expand only requested paths. A known hash may also occur in an unrequested sibling;
+    /// expanding it there would duplicate leaves and can grow exponentially with path depth.
     fn emit(
         &mut self,
         hash: Felt,
         parent_bit: usize,
         nodes: &HashMap<Felt, Node>,
-        indices: &BTreeMap<Felt, usize>,
+        keys: &mut [(Felt, usize)],
     ) -> Result<(), CommittedDataError> {
+        if keys.is_empty() {
+            self.proof.extend([Felt::ZERO, hash]);
+            return Ok(());
+        }
         match nodes.get(&hash) {
-            None => self.proof.extend([Felt::ZERO, hash]),
+            None => return Err(CommittedDataError::InvalidWitness),
             Some(Node::Leaf { key, .. }) => {
-                self.proof.extend([Felt::ONE, Felt::from(indices[key])]);
+                if keys.len() != 1 || keys[0].0 != *key {
+                    return Err(CommittedDataError::InvalidWitness);
+                }
+                self.proof.extend([Felt::ONE, Felt::from(keys[0].1)]);
             }
             Some(Node::Branch { bit, left, right }) => {
                 if usize::from(*bit) >= parent_bit {
@@ -167,8 +175,13 @@ impl CommittedDataBatchProof {
                 }
                 self.branches += 1;
                 self.proof.extend([Felt::TWO, Felt::from(*bit)]);
-                self.emit(*left, usize::from(*bit), nodes, indices)?;
-                self.emit(*right, usize::from(*bit), nodes, indices)?;
+                // Membership witnesses need not reveal the canonical shape of opaque subtrees.
+                // Partition by this branch's bit rather than assuming numerical key order.
+                keys.sort_unstable_by_key(|(key, _)| key_bit(*key, *bit));
+                let split = keys.partition_point(|(key, _)| !key_bit(*key, *bit));
+                let (left_keys, right_keys) = keys.split_at_mut(split);
+                self.emit(*left, usize::from(*bit), nodes, left_keys)?;
+                self.emit(*right, usize::from(*bit), nodes, right_keys)?;
             }
         }
         Ok(())
@@ -188,8 +201,52 @@ fn insert(
 
 #[cfg(test)]
 mod tests {
-    use super::super::CommittedDataSet;
+    use super::super::{CommittedDataSet, CommittedDataSibling};
     use super::*;
+
+    #[test]
+    fn repeated_sibling_hashes_expand_only_the_requested_path() {
+        let mut root = leaf(Felt::ZERO, Felt::ONE);
+        let mut siblings = Vec::new();
+        for bit in 0..COMMITTED_DATA_TREE_HEIGHT {
+            siblings.push(CommittedDataSibling { bit: bit as u8, hash: root });
+            root = branch(bit as u8, root, root);
+        }
+        let witness = CommittedDataWitness { root, key: Felt::ZERO, value: Felt::ONE, siblings };
+        assert!(witness.verify());
+        let proof =
+            CommittedDataBatchProof::new(root, &[Felt::ZERO], |_| Ok(Some(witness.clone())))
+                .unwrap();
+        assert_eq!(proof.branches, COMMITTED_DATA_TREE_HEIGHT);
+        assert_eq!(proof.proof.len(), 4 * COMMITTED_DATA_TREE_HEIGHT + 2);
+        assert_eq!(proof.unique_leaves(), 1);
+    }
+
+    #[test]
+    fn witness_union_routes_by_branch_bit_not_numeric_key_order() {
+        // Individual witnesses authenticate routing, not the hidden subtrees' canonical shape.
+        let left = leaf(Felt::TWO, Felt::from(10));
+        let right = leaf(Felt::ONE, Felt::from(20));
+        let root = branch(0, left, right);
+        let proof = CommittedDataBatchProof::new(root, &[Felt::ONE, Felt::TWO], |key| {
+            let (value, hash) = if key == Felt::ONE { (20, left) } else { (10, right) };
+            let witness = CommittedDataWitness {
+                root,
+                key,
+                value: Felt::from(value),
+                siblings: vec![CommittedDataSibling { bit: 0, hash }],
+            };
+            assert!(witness.verify());
+            Ok(Some(witness))
+        })
+        .unwrap();
+        assert_eq!(
+            proof.proof,
+            [Felt::TWO, Felt::ZERO, Felt::ONE, Felt::ONE, Felt::ONE, Felt::ZERO]
+        );
+        assert_eq!(proof.indices, [0, 1]);
+        assert_eq!(proof.branches, 1);
+    }
 
     #[test]
     fn union_shares_branches_and_fetches_duplicates_once() {
