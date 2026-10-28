@@ -113,7 +113,7 @@ const MAX_COMMITTED_DATA_READ_KEYS = 1024;
 from starkware.cairo.common.alloc import alloc
 from starkware.cairo.common.memcpy import memcpy
 
-// One constrained membership read. Out-of-gas preserves the gas before this read.
+// One constrained membership read. Unpaid verification is never a provable syscall result.
 func committed_data_read_one{range_check_ptr, poseidon_ptr: PoseidonBuiltin*}(
     committed_data_root: felt, committed_data_key: felt, remaining_gas: felt
 ) -> (value: felt, gas: felt, error: felt) {
@@ -141,8 +141,9 @@ func committed_data_read_one{range_check_ptr, poseidon_ptr: PoseidonBuiltin*}(
     let poseidon_charge = (2 * committed_data_height + 2) * POSEIDON_SIERRA_GAS;
     local charge = step_charge + range_check_charge + poseidon_charge;
     let gas_sufficient = is_le_felt(charge, remaining_gas);
-    if (gas_sufficient == 0) {
-        return (value=0, gas=remaining_gas, error=ERROR_OUT_OF_GAS);
+    // Match the transaction-level Blockifier rejection, even if the caller catches errors.
+    with_attr error_message("Insufficient gas for committed-data verification") {
+        assert gas_sufficient = 1;
     }
     assert_nn(remaining_gas - charge);
     return (value=committed_data_value, gas=remaining_gas - charge, error=0);
@@ -297,7 +298,8 @@ func verify_committed_data_batch{
 }
 
 // Counts are verified before the gas comparison: the hint cannot invent a more expensive proof
-// to force an out-of-gas response. Failed calls reserve the full bounded verification work.
+// to force an out-of-gas response. Insufficient budget rejects the proof instead of returning
+// a catchable error with unpaid verification work.
 func committed_data_read_batch{
     range_check_ptr, poseidon_ptr: PoseidonBuiltin*, bitwise_ptr: BitwiseBuiltin*
 }(
@@ -335,8 +337,8 @@ func committed_data_read_batch{
     local charge = steps * STEP_SIERRA_GAS + range_checks * RANGE_CHECK_SIERRA_GAS + poseidons *
         POSEIDON_SIERRA_GAS + bitwise * BITWISE_SIERRA_GAS;
     let gas_sufficient = is_le_felt(charge, remaining_gas);
-    if (gas_sufficient == 0) {
-        return (gas=remaining_gas, error=ERROR_OUT_OF_GAS);
+    with_attr error_message("Insufficient gas for committed-data verification") {
+        assert gas_sufficient = 1;
     }
     assert_nn(remaining_gas - charge);
     return (gas=remaining_gas - charge, error=0);
@@ -438,7 +440,7 @@ func execute_committed_data_call{
 }
 
 from starkware.cairo.common.math_cmp import is_le_felt, is_le
-from starkware.starknet.core.os.constants import ERROR_INVALID_ARGUMENT, ERROR_OUT_OF_GAS
+from starkware.starknet.core.os.constants import ERROR_INVALID_ARGUMENT
 
 @known_ap_change
 func committed_data_failure{syscall_ptr: felt*}(remaining_gas: felt, error: felt) {

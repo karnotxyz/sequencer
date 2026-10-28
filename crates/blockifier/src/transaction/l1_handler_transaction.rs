@@ -77,6 +77,12 @@ impl<U: UpdatableState> ExecutableTransaction<U> for L1HandlerTransaction {
         let mut execution_state = TransactionalState::create_transactional(state);
         let execution_result =
             self.run_execute(&mut execution_state, &mut context, &mut remaining_gas);
+        // An availability or proof-budget failure must not become a canonical L1 revert.
+        // In particular, catching an inner syscall error cannot publish unpaid proof work.
+        if let Some(error) = context.committed_data_failure.take() {
+            execution_state.abort();
+            return Err(error.into());
+        }
         match execution_result {
             Ok(execute_call_info) => {
                 let receipt = TransactionReceipt::from_l1_handler(

@@ -8,17 +8,17 @@
 //! reads reject the account transaction or proof instead of producing a provable revert. The
 //! address is always reserved and the permission does not affect the OS configuration hash.
 //!
-//! Supported usage is through account transactions. L1 handlers do not check the sticky
-//! committed-data failure and can record disabled or missing data as a transaction revert.
-//! Committed-data reads, including reads through adapters, must therefore stay out of L1-handler
-//! execution. This limitation concerns reading the dataset, not publishing its root to storage.
+//! Witness-dependent gas is checked after authentication. Insufficient gas is a sticky,
+//! transaction-level rejection, not a catchable syscall revert: otherwise the OS could verify
+//! proofs in a successful transaction without charging for them. Both account and L1-handler
+//! boundaries consume this marker before publishing state or a receipt.
 use std::collections::HashMap;
 use std::sync::Arc;
 
 use starknet_api::abi::abi_utils::selector_from_name;
 use starknet_types_core::felt::Felt;
 
-use super::hint_processor::{INVALID_ARGUMENT_FELT, OUT_OF_GAS_ERROR_FELT};
+use super::hint_processor::INVALID_ARGUMENT_FELT;
 use super::vm_syscall_utils::SyscallExecutorBaseError;
 
 /// `starknet_keccak("committed_data_v1")`. Permanently reserved by this OS version.
@@ -140,7 +140,7 @@ pub fn read_values(
     selector: Felt,
     calldata: &[Felt],
     remaining_gas: &mut u64,
-    availability_failure: &mut Option<CommittedDataError>,
+    transaction_failure: &mut Option<CommittedDataError>,
 ) -> Result<
     (Vec<Felt>, cairo_vm::vm::runners::cairo_runner::ExecutionResources),
     SyscallExecutorBaseError,
@@ -153,35 +153,26 @@ pub fn read_values(
             selector,
             calldata,
             remaining_gas,
-            availability_failure,
+            transaction_failure,
         )
         .map(|(value, height)| (vec![value], read_os_resources(height)));
     }
     let (keys, batch) = read_keys(selector, calldata)?;
     if !batch {
-        return read_value(
-            true,
-            witnesses,
-            selector,
-            calldata,
-            remaining_gas,
-            availability_failure,
-        )
-        .map(|(value, height)| (vec![value], read_os_resources(height)));
+        return read_value(true, witnesses, selector, calldata, remaining_gas, transaction_failure)
+            .map(|(value, height)| (vec![value], read_os_resources(height)));
     }
     let proof = witnesses.batch(calldata[0], keys).map_err(|error| {
         let syscall_error = SyscallExecutorBaseError::InvalidSyscallInput {
             input: selector,
             info: error.to_string(),
         };
-        availability_failure.get_or_insert(error);
+        transaction_failure.get_or_insert(error);
         syscall_error
     })?;
     let unique = proof.unique_leaves();
     let charge = batch_gas(keys.len(), unique, proof.branches);
-    *remaining_gas = remaining_gas.checked_sub(charge).ok_or_else(|| {
-        SyscallExecutorBaseError::Revert { error_data: vec![OUT_OF_GAS_ERROR_FELT] }
-    })?;
+    charge_authenticated_read(selector, charge, remaining_gas, transaction_failure)?;
     let mut values = Vec::with_capacity(keys.len() + 1);
     values.push(Felt::from(keys.len()));
     values.extend(proof.indices.iter().map(|index| proof.leaves[2 * index + 1]));
@@ -201,9 +192,36 @@ pub fn failed_read_resources(
     }
 }
 
-/// Failures of execution permission, dataset authentication or witness lookup.
+/// Debit only authenticated work. Reject the whole transaction when its remaining budget
+/// cannot cover verification; charging beyond that budget or allowing Cairo to catch this
+/// failure would violate resource bounds or admit unpaid OS work, respectively.
+fn charge_authenticated_read(
+    selector: Felt,
+    required: u64,
+    remaining_gas: &mut u64,
+    transaction_failure: &mut Option<CommittedDataError>,
+) -> Result<(), SyscallExecutorBaseError> {
+    let Some(after_charge) = remaining_gas.checked_sub(required) else {
+        let error = CommittedDataError::InsufficientGas { required, remaining: *remaining_gas };
+        let syscall_error = SyscallExecutorBaseError::InvalidSyscallInput {
+            input: selector,
+            info: error.to_string(),
+        };
+        transaction_failure.get_or_insert(error);
+        return Err(syscall_error);
+    };
+    *remaining_gas = after_charge;
+    Ok(())
+}
+
+/// Failures of permission, authentication, lookup, or the budget for authenticated proof work.
 #[derive(Debug, thiserror::Error)]
 pub enum CommittedDataError {
+    #[error(
+        "Insufficient gas for committed-data verification: required {required}, remaining \
+         {remaining}"
+    )]
+    InsufficientGas { required: u64, remaining: u64 },
     #[error("Committed-data reads require use_committed_data=true")]
     Disabled,
     #[error("Dataset must contain 1..={MAX_COMMITTED_DATA_VALUES} values")]
@@ -307,7 +325,7 @@ pub fn read_value(
     selector: Felt,
     calldata: &[Felt],
     remaining_gas: &mut u64,
-    availability_failure: &mut Option<CommittedDataError>,
+    transaction_failure: &mut Option<CommittedDataError>,
 ) -> Result<(Felt, usize), SyscallExecutorBaseError> {
     let invalid = |info: &str| SyscallExecutorBaseError::InvalidSyscallInput {
         input: selector,
@@ -316,7 +334,7 @@ pub fn read_value(
     if !use_committed_data {
         let error = CommittedDataError::Disabled;
         let syscall_error = invalid(&error.to_string());
-        availability_failure.get_or_insert(error);
+        transaction_failure.get_or_insert(error);
         return Err(syscall_error);
     }
     validate_read_request(selector, calldata, *remaining_gas)?;
@@ -327,15 +345,11 @@ pub fn read_value(
             let syscall_error = invalid(&error.to_string());
             // This marker survives nested-call error handling. The transaction boundary must
             // reject unavailable data rather than commit an unprovable reverted receipt.
-            availability_failure.get_or_insert(error);
+            transaction_failure.get_or_insert(error);
             return Err(syscall_error);
         }
     };
-    let gas = read_gas(height);
-    if *remaining_gas < gas {
-        return Err(SyscallExecutorBaseError::Revert { error_data: vec![OUT_OF_GAS_ERROR_FELT] });
-    }
-    *remaining_gas -= gas;
+    charge_authenticated_read(selector, read_gas(height), remaining_gas, transaction_failure)?;
     Ok((value, height))
 }
 

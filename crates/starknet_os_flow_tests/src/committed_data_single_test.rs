@@ -3,12 +3,12 @@ use std::collections::HashMap;
 
 use apollo_starknet_os_program::OS_PROGRAM_BYTES;
 use blockifier::execution::syscalls::committed_data::{
+    batch_gas,
     read_gas,
     CommittedDataSet,
     CommittedDataSibling,
     CommittedDataWitness,
 };
-use blockifier::execution::syscalls::hint_processor::OUT_OF_GAS_ERROR_FELT;
 use blockifier::test_utils::dict_state_reader::DictStateReader;
 use cairo_vm::types::builtin_name::BuiltinName;
 use cairo_vm::types::layout_name::LayoutName;
@@ -24,12 +24,21 @@ use starknet_os::test_utils::cairo_runner::{
 };
 use starknet_types_core::felt::Felt;
 
-fn read_one(
+fn read_authenticated(
     witness: CommittedDataWitness,
     gas: u64,
+    batch: bool,
 ) -> Result<Vec<MaybeRelocatable>, Box<dyn std::error::Error>> {
-    let entrypoint = "starkware.starknet.core.os.execution.committed_data.committed_data_read_one";
-    let builtins = [BuiltinName::range_check, BuiltinName::poseidon];
+    let entrypoint = if batch {
+        "starkware.starknet.core.os.execution.committed_data.committed_data_read_batch"
+    } else {
+        "starkware.starknet.core.os.execution.committed_data.committed_data_read_one"
+    };
+    let builtins = if batch {
+        vec![BuiltinName::range_check, BuiltinName::poseidon, BuiltinName::bitwise]
+    } else {
+        vec![BuiltinName::range_check, BuiltinName::poseidon]
+    };
     let (mut runner, program, _) = initialize_cairo_runner(
         &EntryPointRunnerConfig {
             layout: LayoutName::all_cairo,
@@ -38,16 +47,38 @@ fn read_one(
         },
         OS_PROGRAM_BYTES,
         entrypoint,
-        &builtins.map(ImplicitArg::Builtin),
+        &builtins.iter().copied().map(ImplicitArg::Builtin).collect::<Vec<_>>(),
         HashMap::new(),
     )?;
-    let mut args: Vec<_> = runner
-        .vm
-        .get_builtin_runners()
+    let mut args: Vec<_> = builtins
         .iter()
-        .map(|builtin| CairoArg::Single(builtin.initial_stack()[0].clone()))
+        .map(|name| {
+            CairoArg::Single(
+                runner
+                    .vm
+                    .get_builtin_runners()
+                    .iter()
+                    .find(|builtin| builtin.name() == *name)
+                    .unwrap()
+                    .initial_stack()[0]
+                    .clone(),
+            )
+        })
         .collect();
-    args.extend([witness.root, witness.key, Felt::from(gas)].map(|x| CairoArg::Single(x.into())));
+    if batch {
+        args.extend([
+            CairoArg::Single(witness.root.into()),
+            CairoArg::Array(vec![witness.key.into()]),
+            CairoArg::Single(Felt::ONE.into()),
+            CairoArg::Array(vec![witness.value.into()]),
+            CairoArg::Single(Felt::from(gas).into()),
+        ]);
+    } else {
+        args.extend(
+            [witness.root, witness.key, Felt::from(gas)]
+                .map(|value| CairoArg::Single(value.into())),
+        );
+    }
     let mut hints = SnosHintProcessor::<DictStateReader>::new_for_testing(
         None,
         &program,
@@ -65,26 +96,42 @@ fn read_one(
         None,
         &mut hints,
     )?;
-    Ok(runner.vm.get_return_values(3)?)
+    Ok(runner.vm.get_return_values(if batch { 2 } else { 3 })?)
 }
 
 #[test]
-fn single_read_authenticates_height_before_selecting_out_of_gas() {
+fn single_read_requires_authenticated_height_and_sufficient_gas() {
     let tree = CommittedDataSet::new(vec![(Felt::ZERO, Felt::ONE)]).unwrap();
     let witness = tree.witness(Felt::ZERO).unwrap();
     let gas = 100_000;
     assert_eq!(
-        read_one(witness.clone(), gas).unwrap(),
+        read_authenticated(witness.clone(), gas, false).unwrap(),
         [Felt::ONE, Felt::from(gas - read_gas(0)), Felt::ZERO].map(MaybeRelocatable::from)
     );
+    assert!(read_authenticated(witness.clone(), 0, false).is_err());
+    assert!(read_authenticated(witness.clone(), read_gas(0) - 1, false).is_err());
     assert_eq!(
-        read_one(witness.clone(), 0).unwrap(),
-        [Felt::ZERO, Felt::ZERO, OUT_OF_GAS_ERROR_FELT].map(MaybeRelocatable::from)
+        read_authenticated(witness.clone(), read_gas(0), false).unwrap(),
+        [Felt::ONE, Felt::ZERO, Felt::ZERO].map(MaybeRelocatable::from)
     );
     let forged = CommittedDataWitness {
         siblings: (0..252_u8).map(|bit| CommittedDataSibling { bit, hash: Felt::ZERO }).collect(),
         ..witness
     };
     assert!(!forged.verify());
-    assert!(read_one(forged, gas).is_err());
+    assert!(read_authenticated(forged, gas, false).is_err());
+}
+
+#[test]
+fn batch_read_cannot_prove_unpaid_verification() {
+    let tree = CommittedDataSet::new(vec![(Felt::ZERO, Felt::ONE)]).unwrap();
+    let witness = tree.witness(Felt::ZERO).unwrap();
+    let charge = batch_gas(1, 1, 0);
+    for budget in [0, charge - 1] {
+        assert!(read_authenticated(witness.clone(), budget, true).is_err());
+    }
+    assert_eq!(
+        read_authenticated(witness, charge, true).unwrap(),
+        [Felt::ZERO, Felt::ZERO].map(MaybeRelocatable::from)
+    );
 }

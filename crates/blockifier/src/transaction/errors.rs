@@ -71,6 +71,12 @@ pub enum TransactionFeeError {
 
 #[derive(Debug, Error)]
 pub enum TransactionExecutionError {
+    /// Permanent budget failure, distinct from retryable witness availability.
+    #[error(
+        "Insufficient gas for committed-data verification: required {required}, remaining \
+         {remaining}"
+    )]
+    CommittedDataInsufficientGas { required: u64, remaining: u64 },
     #[error("Committed-data availability failure: {0}")]
     CommittedDataAvailability(crate::execution::syscalls::committed_data::CommittedDataError),
     #[error(
@@ -158,4 +164,20 @@ pub enum NumericConversionError {
     U32ToUsizeError(u32),
     #[error("Conversion of {0} to u64 unsuccessful.")]
     U64ToUsizeError(u64),
+}
+
+/// Preserve the distinction between an unavailable witness and a transaction whose gas budget
+/// cannot pay for its authenticated proof. Both reject the transaction before state publication.
+impl From<crate::execution::syscalls::committed_data::CommittedDataError>
+    for TransactionExecutionError
+{
+    fn from(error: crate::execution::syscalls::committed_data::CommittedDataError) -> Self {
+        use crate::execution::syscalls::committed_data::CommittedDataError;
+        match error {
+            CommittedDataError::InsufficientGas { required, remaining } => {
+                Self::CommittedDataInsufficientGas { required, remaining }
+            }
+            error => Self::CommittedDataAvailability(error),
+        }
+    }
 }

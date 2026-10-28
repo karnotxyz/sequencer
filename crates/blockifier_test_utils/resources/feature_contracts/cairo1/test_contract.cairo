@@ -551,6 +551,12 @@ mod TestContract {
         x.squash();
     }
 
+    // Exercise the same catching helper through the L1 transaction boundary.
+    #[l1_handler]
+    fn l1_committed_data_catch(self: @ContractState, from_address: felt252, root: felt252, keys: Span<felt252>) {
+        test_committed_data_catch(self, root, keys, true, 3);
+    }
+
     #[l1_handler]
     fn l1_handle(self: @ContractState, from_address: felt252, arg: felt252) -> felt252 {
         arg

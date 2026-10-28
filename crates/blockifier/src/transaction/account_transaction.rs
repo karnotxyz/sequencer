@@ -581,8 +581,12 @@ impl AccountTransaction {
             SierraGasRevertTracker::new(GasAmount(remaining_gas_for_fee_transfer)),
         );
 
-        Ok(fee_transfer_call
-            .execute(state, &mut context, &mut remaining_gas_for_fee_transfer)
+        let transfer_result =
+            fee_transfer_call.execute(state, &mut context, &mut remaining_gas_for_fee_transfer);
+        if let Some(error) = context.committed_data_failure.take() {
+            return Err(error.into());
+        }
+        Ok(transfer_result
             .map_err(|error| Box::new(TransactionFeeError::ExecuteFeeTransferError(error)))?)
     }
 
@@ -663,7 +667,7 @@ impl AccountTransaction {
             );
             let execution_result = self.run_execute(state, &mut execution_context, remaining_gas);
             if let Some(error) = execution_context.committed_data_failure.take() {
-                return Err(TransactionExecutionError::CommittedDataAvailability(error));
+                return Err(error.into());
             }
             execute_call_info = execution_result?;
             validate_call_info = self.validate_tx(state, tx_context.clone(), remaining_gas)?;
@@ -681,7 +685,7 @@ impl AccountTransaction {
             );
             let execution_result = self.run_execute(state, &mut execution_context, remaining_gas);
             if let Some(error) = execution_context.committed_data_failure.take() {
-                return Err(TransactionExecutionError::CommittedDataAvailability(error));
+                return Err(error.into());
             }
             execute_call_info = execution_result?;
         }
@@ -751,7 +755,7 @@ impl AccountTransaction {
 
         if let Some(error) = execution_context.committed_data_failure.take() {
             execution_state.abort();
-            return Err(TransactionExecutionError::CommittedDataAvailability(error));
+            return Err(error.into());
         }
 
         // Pre-compute cost in case of revert.
@@ -1038,14 +1042,19 @@ impl ValidatableTransaction for AccountTransaction {
         };
 
         // Note that we allow a revert here and we handle it bellow to get a better error message.
-        let validate_call_info = validate_call
-            .execute(state, &mut context, remaining_validation_gas)
-            .map_err(|error| TransactionExecutionError::ValidateTransactionError {
+        let validation_result =
+            validate_call.execute(state, &mut context, remaining_validation_gas);
+        if let Some(error) = context.committed_data_failure.take() {
+            return Err(error.into());
+        }
+        let validate_call_info = validation_result.map_err(|error| {
+            TransactionExecutionError::ValidateTransactionError {
                 error: Box::new(error),
                 class_hash,
                 storage_address,
                 selector: validate_selector,
-            })?;
+            }
+        })?;
 
         // Validate return data.
         let compiled_class = state.get_compiled_class(class_hash)?;
