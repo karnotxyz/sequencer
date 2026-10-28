@@ -1,6 +1,7 @@
+use std::sync::atomic::{AtomicU64, Ordering};
+
 use apollo_metrics::define_metrics;
 use apollo_metrics::metrics::{MetricCounter, MetricDetails, MetricScope};
-use std::sync::atomic::{AtomicU64, Ordering};
 
 define_metrics!(
     Blockifier => {

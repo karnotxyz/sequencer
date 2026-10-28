@@ -1,11 +1,7 @@
-use std::{
-    borrow::Borrow,
-    hash::Hash,
-    sync::{
-        LazyLock,
-        atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering},
-    },
-};
+use std::borrow::Borrow;
+use std::hash::Hash;
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
+use std::sync::LazyLock;
 
 use dashmap::DashMap;
 use starknet_types_core::felt::Felt;
