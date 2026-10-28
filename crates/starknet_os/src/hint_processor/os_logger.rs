@@ -85,12 +85,21 @@ pub struct SyscallTrace {
     is_deprecated: bool,
     tab_count: usize,
     inner_syscalls: Vec<SyscallTrace>,
+    committed_request:
+        Option<(starknet_types_core::felt::Felt, Vec<starknet_types_core::felt::Felt>)>,
     resources: Option<ExecutionResources>,
 }
 
 impl SyscallTrace {
     pub fn new(selector: SyscallSelector, is_deprecated: bool, tab_count: usize) -> Self {
-        Self { selector, is_deprecated, tab_count, inner_syscalls: Vec::new(), resources: None }
+        Self {
+            selector,
+            is_deprecated,
+            tab_count,
+            inner_syscalls: Vec::new(),
+            committed_request: None,
+            resources: None,
+        }
     }
 
     pub fn push_inner_syscall(&mut self, inner: SyscallTrace) {
@@ -323,6 +332,17 @@ impl OsLogger {
             syscall_stack: Vec::new(),
             txs: Vec::new(),
             resource_counter_stack: Vec::new(),
+        }
+    }
+
+    /// Attribute special calls for resource audits; this supplies no proof or fee input.
+    pub(crate) fn mark_committed_request(
+        &mut self,
+        root: starknet_types_core::felt::Felt,
+        keys: Vec<starknet_types_core::felt::Felt>,
+    ) {
+        if let Some(call) = self.syscall_stack.last_mut() {
+            call.committed_request = Some((root, keys));
         }
     }
 

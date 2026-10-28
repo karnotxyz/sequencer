@@ -1,3 +1,26 @@
+from starkware.cairo.common.dict import DictAccess, dict_read, dict_write
+from starkware.cairo.common.default_dict import default_dict_new, default_dict_finalize
+from starkware.starknet.core.os.output import OsCarriedOutputs
+
+// One root owns an append-only dictionary of reads and one branch-count claim per call.
+// Finalization authenticates their exact union, preserving the original MPT commitment.
+struct CommittedDataRootCache {
+    start: DictAccess*,
+    end: DictAccess*,
+    claims: CommittedDataClaim*,
+    calls: felt,
+}
+// Each expanded branch must occupy one distinct slot charged to its earliest reader.
+// Distinct proof addresses prevent a malicious hint from spending the same slot twice.
+struct CommittedDataClaim {
+    count: felt,
+    slots: felt*,
+}
+// Repeated reads reuse the same value cell and earliest call index.
+struct CommittedDataRead {
+    value: felt*,
+    owner: felt,
+}
 // Experimental protocol extension. Not enabled on upstream Starknet.
 from starkware.cairo.common.poseidon_state import PoseidonBuiltinState
 from starkware.cairo.common.cairo_builtins import PoseidonBuiltin, BitwiseBuiltin
@@ -344,14 +367,358 @@ func committed_data_read_batch{
     return (gas=remaining_gas - charge, error=0);
 }
 
+// Record requests before reading values. Cold cells are hinted now and authenticated before
+// block finalization completes; warm cells are immutable dictionary entries.
+func committed_data_collect{leaf_cache: DictAccess*, cold_keys: felt*, cold_values: felt*}(
+    keys: felt*, count: felt, references: felt*, owner: felt
+) {
+    alloc_locals;
+    if (count == 0) {
+        return ();
+    }
+    let (cached) = dict_read{dict_ptr=leaf_cache}(key=keys[0]);
+    if (cached == 0) {
+        assert cold_keys[0] = keys[0];
+        assert references[0] = cast(cold_values, felt);
+        tempvar read = new CommittedDataRead(value=cold_values, owner=owner);
+        dict_write{dict_ptr=leaf_cache}(key=keys[0], new_value=cast(read, felt));
+        let cold_keys = cold_keys + 1;
+        let cold_values = cold_values + 1;
+        return committed_data_collect(keys + 1, count - 1, references + 1, owner);
+    }
+    let read = cast(cached, CommittedDataRead*);
+    assert references[0] = cast(read.value, felt);
+    return committed_data_collect(keys + 1, count - 1, references + 1, owner);
+}
+func committed_data_root_cache{committed_data_cache: DictAccess*}(root: felt) -> (
+    start: DictAccess*, end: DictAccess*, claims: CommittedDataClaim*, calls: felt
+) {
+    alloc_locals;
+    let (cached) = dict_read{dict_ptr=committed_data_cache}(key=root);
+    if (cached == 0) {
+        let (local start) = default_dict_new(0);
+        let (claims: CommittedDataClaim*) = alloc();
+        return (start=start, end=start, claims=claims, calls=0);
+    }
+    let certificate = cast(cached, CommittedDataRootCache*);
+    return (
+        start=certificate.start,
+        end=certificate.end,
+        claims=certificate.claims,
+        calls=certificate.calls,
+    );
+}
+func committed_data_finalize{
+    range_check_ptr, bitwise_ptr: BitwiseBuiltin*, poseidon_ptr: PoseidonBuiltin*
+}(start: DictAccess*, end: DictAccess*) {
+    %{ StartCommittedDataFinalization %}
+    let (roots, roots_end) = default_dict_finalize(start, end, 0);
+    committed_data_finalize_roots(roots, roots_end);
+    %{ EndCommittedDataFinalization %}
+    return ();
+}
+func committed_data_fill_leaves(entries: DictAccess*, count: felt, leaves: felt*) {
+    if (count == 0) {
+        return ();
+    }
+    let read = cast(entries.new_value, CommittedDataRead*);
+    assert leaves[0] = entries.key;
+    assert leaves[1] = [read.value];
+    assert leaves[2] = read.owner;
+    return committed_data_fill_leaves(entries + DictAccess.SIZE, count - 1, leaves + 3);
+}
+// Squashing binds the final proof to every actual read, including caught nested reverts.
+// No hint may add leaves, omit reads, change returned values, or invent branch charges.
+func committed_data_finalize_roots{
+    range_check_ptr, bitwise_ptr: BitwiseBuiltin*, poseidon_ptr: PoseidonBuiltin*
+}(roots: DictAccess*, roots_end: DictAccess*) {
+    alloc_locals;
+    if (roots == roots_end) {
+        return ();
+    }
+    local roots_next: DictAccess* = roots + DictAccess.SIZE;
+    local roots_end: DictAccess* = roots_end;
+    local committed_data_root = roots.key;
+    local certificate: CommittedDataRootCache* = cast(roots.new_value, CommittedDataRootCache*);
+    let (entries, entries_end) = default_dict_finalize(certificate.start, certificate.end, 0);
+    local committed_data_leaf_count = (entries_end - entries) / DictAccess.SIZE;
+    assert_nn(committed_data_leaf_count - 1);
+    assert_nn(2 ** 64 - committed_data_leaf_count - 1);
+    let (local committed_data_leaves: felt*) = alloc();
+    committed_data_fill_leaves(entries, committed_data_leaf_count, committed_data_leaves);
+    local committed_data_proof: felt*;
+    local committed_data_proof_end: felt*;
+    %{ LoadCommittedDataRootUnion %}
+    local proof_size = committed_data_proof_end - committed_data_proof;
+    assert_nn(proof_size);
+    assert_nn(2 ** 64 - proof_size - 1);
+    let (branches_left) = committed_data_claim_sum(certificate.claims, certificate.calls);
+    assert_nn(committed_data_leaf_count * 252 - branches_left);
+    let leaves_left = committed_data_leaf_count;
+    let proof = committed_data_proof;
+    let (masks) = get_label_location(committed_data_powers);
+    with proof, branches_left, leaves_left {
+        let (hash, owner) = committed_data_union_node(
+            masks,
+            committed_data_leaves,
+            committed_data_leaf_count,
+            certificate.claims,
+            certificate.calls,
+            252,
+            0,
+            0,
+            0,
+            0,
+        );
+        assert hash = committed_data_root;
+        assert branches_left = 0;
+        assert leaves_left = 0;
+        assert proof = committed_data_proof_end;
+    }
+    return committed_data_finalize_roots(roots_next, roots_end);
+}
+
+func committed_data_copy_values(references: felt*, values: felt*, count: felt) {
+    if (count == 0) {
+        return ();
+    }
+    assert values[0] = [cast(references[0], felt*)];
+    return committed_data_copy_values(references + 1, values + 1, count - 1);
+}
+
+func committed_data_shared_dispatch{
+    range_check_ptr,
+    poseidon_ptr: PoseidonBuiltin*,
+    bitwise_ptr: BitwiseBuiltin*,
+    committed_data_cache: DictAccess*,
+}(root: felt, keys: felt*, count: felt, values: felt*, gas: felt) -> (gas: felt, error: felt) {
+    alloc_locals;
+    local committed_data_root = root;
+    local committed_data_keys: felt* = keys;
+    local committed_data_count = count;
+    let (local cold_keys_start) = alloc();
+    let (local cold_values_start) = alloc();
+    let (local references) = alloc();
+    let cold_keys = cold_keys_start;
+    let cold_values = cold_values_start;
+    let (local leaf_start, leaf_end, local claims, local calls) = committed_data_root_cache(root);
+    assert_nn(2 ** 64 - calls - 2);
+    let leaf_cache = leaf_end;
+    with cold_keys, cold_values, leaf_cache {
+        committed_data_collect(keys, count, references, calls);
+    }
+    local cold_count = cold_keys - cold_keys_start;
+    local committed_data_cache_start: DictAccess* = leaf_start;
+    local committed_data_cold_keys: felt* = cold_keys_start;
+    local committed_data_cold_values: felt* = cold_values_start;
+    local committed_data_cold_count = cold_count;
+    local committed_data_branch_count;
+    %{ LoadCommittedDataDeferred %}
+    assert_nn(committed_data_branch_count);
+    assert_nn(cold_count * 252 - committed_data_branch_count);
+    let (slots) = alloc();
+    assert [claims + calls * CommittedDataClaim.SIZE] = CommittedDataClaim(
+        count=committed_data_branch_count, slots=slots
+    );
+    tempvar certificate = new CommittedDataRootCache(
+        start=leaf_start, end=leaf_cache, claims=claims, calls=calls + 1
+    );
+    dict_write{dict_ptr=committed_data_cache}(key=root, new_value=cast(certificate, felt));
+    local shared_charge = (800 + 80 * count) * STEP_SIERRA_GAS + (20 + 4 * count) *
+        RANGE_CHECK_SIERRA_GAS;
+    if (cold_count == 0) {
+        return committed_data_finish(references, values, count, shared_charge, gas);
+    }
+    let steps = 1000 + 220 * cold_count + 160 * committed_data_branch_count -
+        COMMITTED_DATA_CALL_CONTRACT_STEPS;
+    let rc = 30 + 16 * cold_count + 6 * committed_data_branch_count -
+        COMMITTED_DATA_CALL_CONTRACT_RANGE_CHECKS;
+    let charge = steps * STEP_SIERRA_GAS + rc * RANGE_CHECK_SIERRA_GAS + 2 * (
+        committed_data_branch_count + cold_count
+    ) * POSEIDON_SIERRA_GAS + 2 * cold_count * BITWISE_SIERRA_GAS;
+    return committed_data_finish(references, values, count, shared_charge + charge, gas);
+}
+
+func committed_data_finish{
+    range_check_ptr,
+    poseidon_ptr: PoseidonBuiltin*,
+    bitwise_ptr: BitwiseBuiltin*,
+    committed_data_cache: DictAccess*,
+}(references: felt*, values: felt*, count: felt, charge: felt, gas: felt) -> (
+    gas: felt, error: felt
+) {
+    alloc_locals;
+    local range_check_ptr = range_check_ptr;
+    local poseidon_ptr: PoseidonBuiltin* = poseidon_ptr;
+    local bitwise_ptr: BitwiseBuiltin* = bitwise_ptr;
+    local committed_data_cache: DictAccess* = committed_data_cache;
+    committed_data_copy_values(references, values, count);
+    let (gas, error) = committed_data_charge(charge, gas);
+    return (gas=gas, error=error);
+}
+
+func committed_data_charge{range_check_ptr}(charge: felt, gas: felt) -> (gas: felt, error: felt) {
+    let sufficient = is_le_felt(charge, gas);
+    with_attr error_message("Insufficient gas for committed-data verification") {
+        assert sufficient = 1;
+    }
+    assert_nn(gas - charge);
+    return (gas=gas - charge, error=0);
+}
+
+// Authenticate the union in preorder. Opaque siblings are never expanded; every expanded
+// branch inherits the minimum reader index of its descendants and consumes that call's slot.
+func committed_data_union_node{
+    range_check_ptr,
+    bitwise_ptr: BitwiseBuiltin*,
+    poseidon_ptr: PoseidonBuiltin*,
+    proof: felt*,
+    branches_left,
+    leaves_left,
+}(
+    masks: felt*,
+    leaves: felt*,
+    leaf_count: felt,
+    claims: CommittedDataClaim*,
+    calls: felt,
+    parent_bit: felt,
+    mask_high: felt,
+    mask_low: felt,
+    path_high: felt,
+    path_low: felt,
+) -> (hash: felt, owner: felt) {
+    alloc_locals;
+    if (proof[0] == 1) {
+        let leaves_left = leaves_left - 1;
+        let index = proof[1];
+        assert_nn(index);
+        assert_nn(leaf_count - index - 1);
+        local key = leaves[3 * index];
+        local value = leaves[3 * index + 1];
+        local owner = leaves[3 * index + 2];
+        assert_nn(owner);
+        assert_nn(calls - owner - 1);
+        let proof = proof + 2;
+        let (local high, local low) = split_felt(key);
+        let (actual_high) = bitwise_and(high, mask_high);
+        assert actual_high = path_high;
+        let (actual_low) = bitwise_and(low, mask_low);
+        assert actual_low = path_low;
+        let (hash) = committed_data_hash3(COMMITTED_DATA_LEAF_DOMAIN, key, value);
+        return (hash=hash, owner=owner);
+    }
+    assert proof[0] = 2;
+    local location: felt* = proof;
+    local bit = proof[1];
+    local slot = proof[2];
+    assert_nn(bit);
+    assert_nn(parent_bit - bit - 1);
+    let branches_left = branches_left - 1;
+    let proof = proof + 3;
+    local bit_high;
+    local bit_low;
+    let lower = is_le(bit, 127);
+    if (lower != 0) {
+        assert bit_high = 0;
+        assert bit_low = masks[bit];
+    } else {
+        assert bit_high = masks[bit - 128];
+        assert bit_low = 0;
+    }
+    if (proof[0] == 0) {
+        local left = proof[1];
+        let proof = proof + 2;
+        let (local right, local owner) = committed_data_union_node(
+            masks,
+            leaves,
+            leaf_count,
+            claims,
+            calls,
+            bit,
+            mask_high + bit_high,
+            mask_low + bit_low,
+            path_high + bit_high,
+            path_low + bit_low,
+        );
+        let claim = claims + owner * CommittedDataClaim.SIZE;
+        assert_nn(slot);
+        assert_nn(claim.count - slot - 1);
+        assert claim.slots[slot] = cast(location, felt);
+        let (hash) = committed_data_hash3(COMMITTED_DATA_BRANCH_DOMAIN + bit, left, right);
+        return (hash=hash, owner=owner);
+    }
+    let (local left, local left_owner) = committed_data_union_node(
+        masks,
+        leaves,
+        leaf_count,
+        claims,
+        calls,
+        bit,
+        mask_high + bit_high,
+        mask_low + bit_low,
+        path_high,
+        path_low,
+    );
+    if (proof[0] == 0) {
+        local right = proof[1];
+        let proof = proof + 2;
+        let claim = claims + left_owner * CommittedDataClaim.SIZE;
+        assert_nn(slot);
+        assert_nn(claim.count - slot - 1);
+        assert claim.slots[slot] = cast(location, felt);
+        let (hash) = committed_data_hash3(COMMITTED_DATA_BRANCH_DOMAIN + bit, left, right);
+        return (hash=hash, owner=left_owner);
+    }
+    let (local right, right_owner) = committed_data_union_node(
+        masks,
+        leaves,
+        leaf_count,
+        claims,
+        calls,
+        bit,
+        mask_high + bit_high,
+        mask_low + bit_low,
+        path_high + bit_high,
+        path_low + bit_low,
+    );
+    local owner;
+    let left_first = is_le(left_owner, right_owner);
+    if (left_first != 0) {
+        assert owner = left_owner;
+    } else {
+        assert owner = right_owner;
+    }
+    let claim = claims + owner * CommittedDataClaim.SIZE;
+    assert_nn(slot);
+    assert_nn(claim.count - slot - 1);
+    assert claim.slots[slot] = cast(location, felt);
+    let (hash) = committed_data_hash3(COMMITTED_DATA_BRANCH_DOMAIN + bit, left, right);
+    return (hash=hash, owner=owner);
+}
+func committed_data_claim_sum{range_check_ptr}(claims: CommittedDataClaim*, calls: felt) -> (
+    count: felt
+) {
+    alloc_locals;
+    if (calls == 0) {
+        return (count=0);
+    }
+    local count = claims.count;
+    assert_nn(count);
+    let (rest) = committed_data_claim_sum(claims + CommittedDataClaim.SIZE, calls - 1);
+    return (count=count + rest);
+}
+
 // Both branches return the same builtin pointers and gas/error shape.
 func committed_data_dispatch{
-    range_check_ptr, poseidon_ptr: PoseidonBuiltin*, bitwise_ptr: BitwiseBuiltin*
+    range_check_ptr,
+    poseidon_ptr: PoseidonBuiltin*,
+    bitwise_ptr: BitwiseBuiltin*,
+    committed_data_cache: DictAccess*,
 }(root: felt, keys: felt*, count: felt, values: felt*, gas: felt, batch: felt) -> (
     gas: felt, error: felt
 ) {
     if (batch != 0) {
-        return committed_data_read_batch(root, keys, count, values, gas);
+        return committed_data_shared_dispatch(root, keys, count, values, gas);
     }
     let (value, gas, error) = committed_data_read_one(root, keys[0], gas);
     assert values[0] = value;
@@ -359,7 +726,7 @@ func committed_data_dispatch{
 }
 
 func execute_committed_data_call{
-    range_check_ptr, syscall_ptr: felt*, builtin_ptrs: BuiltinPointers*
+    range_check_ptr, syscall_ptr: felt*, builtin_ptrs: BuiltinPointers*, outputs: OsCarriedOutputs*
 }(request: CallContractRequest*, remaining_gas: felt, use_committed_data: felt) {
     alloc_locals;
     assert request.contract_address = COMMITTED_DATA_CONTRACT_ADDRESS;
@@ -404,11 +771,17 @@ func execute_committed_data_call{
     let selectable_builtins = &builtin_ptrs.selectable;
     let poseidon_ptr = selectable_builtins.poseidon;
     let bitwise_ptr = selectable_builtins.bitwise;
-    with poseidon_ptr, bitwise_ptr {
+    let committed_data_cache = outputs.committed_data_cache;
+    with poseidon_ptr, bitwise_ptr, committed_data_cache {
         let (local gas, local error) = committed_data_dispatch(
             request.calldata_start[0], keys, count, values, remaining_gas, batch
         );
     }
+    tempvar outputs = new OsCarriedOutputs(
+        messages_to_l1=outputs.messages_to_l1,
+        messages_to_l2=outputs.messages_to_l2,
+        committed_data_cache=committed_data_cache,
+    );
     tempvar builtin_ptrs = new BuiltinPointers(
         selectable=SelectableBuiltins(
             pedersen=selectable_builtins.pedersen,

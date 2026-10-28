@@ -927,6 +927,8 @@ impl<U: UpdatableState> ExecutableTransaction<U> for AccountTransaction {
         // Nonce and fee check should be done before running user code.
         self.perform_pre_validation_stage(state, &tx_context).map_err(Box::new)?;
 
+        // Fully reverted execution is skipped by SNOS and cannot warm subsequent reads.
+        let read_checkpoint = block_context.committed_data_read_set.fork();
         // Run validation and execution.
         let initial_gas = tx_context.initial_sierra_gas();
         let ValidateExecuteCallInfo {
@@ -941,6 +943,9 @@ impl<U: UpdatableState> ExecutableTransaction<U> for AccountTransaction {
                     gas: total_gas,
                 },
         } = self.run_or_revert(state, &mut GasCounter::new(initial_gas), tx_context.clone())?;
+        if revert_error.is_some() {
+            block_context.committed_data_read_set.replace_with(&read_checkpoint);
+        }
         let fee_transfer_call_info = Self::handle_fee(
             state,
             tx_context,

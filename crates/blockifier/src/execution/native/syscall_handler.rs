@@ -508,9 +508,10 @@ impl StarknetSyscallHandler for &mut NativeSyscallHandler<'_> {
             .map_err(|e| self.handle_error(remaining_gas, e))?;
 
         if address == crate::execution::syscalls::committed_data::COMMITTED_DATA_ADDRESS {
-            let result = crate::execution::syscalls::committed_data::read_values(
+            let result = crate::execution::syscalls::committed_data::read_values_shared(
                 self.base.context.tx_context.block_context.use_committed_data,
                 &self.base.context.tx_context.block_context.committed_data_witnesses,
+                &self.base.context.tx_context.block_context.committed_data_read_set,
                 entry_point_selector,
                 calldata,
                 remaining_gas,

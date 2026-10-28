@@ -123,6 +123,12 @@ pub struct SnosHintProcessor<'a, S: StateReader> {
     pub(crate) execution_helpers_manager: ExecutionHelpersManager<'a, S>,
     pub(crate) os_hints_config: OsHintsConfig,
     committed_data_index: HashMap<(Felt, Felt), usize>,
+    pub(crate) committed_data_billing:
+        HashMap<u64, blockifier::execution::syscalls::committed_data::CommittedDataReadSet>,
+    pub(crate) committed_root_branch_cache: HashSet<(Relocatable, Felt)>,
+    pub(crate) committed_finalization_start: Option<(usize, Relocatable, Relocatable, Relocatable)>,
+    pub(crate) committed_finalizations:
+        Vec<cairo_vm::vm::runners::cairo_runner::ExecutionResources>,
     pub(crate) deprecated_compiled_classes_iter: IntoIter<ClassHash, ContractClass>,
     pub(crate) deprecated_class_hashes: HashSet<ClassHash>,
     pub(crate) compiled_classes: BTreeMap<CompiledClassHash, CasmContractClass>,
@@ -190,6 +196,10 @@ impl<'a, S: StateReader> SnosHintProcessor<'a, S> {
             execution_helpers_manager: ExecutionHelpersManager::new(execution_helpers),
             os_hints_config,
             committed_data_index,
+            committed_data_billing: HashMap::new(),
+            committed_root_branch_cache: HashSet::new(),
+            committed_finalization_start: None,
+            committed_finalizations: Vec::new(),
             da_segment: None,
             builtin_hint_processor: BuiltinHintProcessor::new_empty(),
             deprecated_class_hashes: deprecated_compiled_classes.keys().copied().collect(),

@@ -151,6 +151,8 @@ fn generate_os_output(
         da_segment: snos_hint_processor.get_da_segment().take(),
         metrics: OsMetrics::new(&mut runner_output.cairo_runner, &snos_hint_processor)?,
         #[cfg(any(test, feature = "testing"))]
+        committed_data_finalizations: snos_hint_processor.committed_finalizations.clone(),
+        #[cfg(any(test, feature = "testing"))]
         txs_trace: snos_hint_processor
             .get_current_execution_helper()
             .unwrap()

@@ -1,9 +1,9 @@
 use std::sync::Arc;
 
 use blockifier::execution::syscalls::committed_data::{
-    read_os_resources,
     CommittedDataWitness,
     CommittedDataWitnesses,
+    read_os_resources,
 };
 use blockifier::execution::syscalls::vm_syscall_utils::SyscallSelector;
 use blockifier::test_utils::dict_state_reader::DictStateReader;
@@ -22,10 +22,10 @@ fn witness(value: Felt, index: u32, height: usize) -> CommittedDataWitness {
 
 fn witness_for_key(value: Felt, key: Felt, height: usize) -> CommittedDataWitness {
     use blockifier::execution::syscalls::committed_data::{
+        CommittedDataSibling,
         branch,
         key_bit,
         leaf,
-        CommittedDataSibling,
     };
     let siblings: Vec<_> = (0..height)
         .map(|i| CommittedDataSibling { bit: i as u8, hash: Felt::from(i + 100) })
@@ -438,11 +438,10 @@ async fn committed_data_virtual_os_uses_standard_config_hash() {
 #[tokio::test]
 async fn committed_data_batches_match_os_and_bound_resources() {
     use blockifier::execution::syscalls::committed_data::{
-        batch_os_resources,
-        leaf,
+        COMMITTED_DATA_ADDRESS,
         CommittedDataBatchProof,
         CommittedDataSet,
-        COMMITTED_DATA_ADDRESS,
+        leaf,
     };
     use starknet_api::abi::abi_utils::selector_from_name;
     let contract = FeatureContract::TestContract(CairoVersion::Cairo1(RunnableCairo1::Casm));
@@ -468,7 +467,8 @@ async fn committed_data_batches_match_os_and_bound_resources() {
     witnesses.extend(sparse.entries().iter().map(|(key, _)| sparse.witness(*key).unwrap()));
     builder.initial_state.block_context.committed_data_witnesses =
         Arc::new(CommittedDataWitnesses::new(witnesses.clone()).unwrap());
-    builder.os_hints_config.committed_data_witnesses = witnesses;
+    builder.os_hints_config.committed_data_witnesses = witnesses.clone();
+    let pricing_witnesses = CommittedDataWitnesses::new(witnesses).unwrap();
     let mut depths =
         vec![(1, 1), (3, 1), (100, 1), (150, 1), (1024, 1), (1024, 0), (150, 19), (2, 252)];
     depths.extend(paths.iter().map(|path| (1, path.siblings.len())));
@@ -509,47 +509,113 @@ async fn committed_data_batches_match_os_and_bound_resources() {
     output.perform_default_validations();
     output.runner_output.cairo_pie.run_validity_checks().unwrap();
     let trace = serde_json::to_value(&output.runner_output.txs_trace).unwrap();
-    let mut calls = Vec::new();
-    collect_profiled_committed_data_calls(&trace, &mut calls);
-    assert_eq!(calls.len(), cases.len());
-    let mut measured_steps = 0;
-    let mut reserved_steps = 0;
-    for (actual, (_, keys, unique, branches)) in calls.iter().zip(cases) {
-        let count = keys.len();
-        let reserved = &get_const_syscall_resources(SyscallSelector::CallContract)
-            + &batch_os_resources(count, unique, branches);
-        measured_steps += actual["n_steps"].as_u64().unwrap() as usize;
-        reserved_steps += reserved.n_steps;
-        eprintln!(
-            "batch keys={count} unique={unique} branches={branches}: actual={actual} \
-             reserved={reserved:?}"
-        );
-        assert!(
-            actual["n_steps"].as_u64().unwrap() <= reserved.n_steps as u64,
-            "batch steps: {actual}"
-        );
-        for (name, bound) in reserved.builtin_instance_counter {
-            let name = format!("{}_builtin", name.to_str());
-            assert!(
-                actual["builtin_instance_counter"][&name].as_u64().unwrap_or(0) <= bound as u64,
-                "batch builtins: {actual}"
-            );
+    fn collect(value: &serde_json::Value, calls: &mut Vec<serde_json::Value>) {
+        match value {
+            serde_json::Value::Array(values) => {
+                for value in values {
+                    collect(value, calls);
+                }
+            }
+            serde_json::Value::Object(object) => {
+                if object.get("committed_request").is_some_and(|request| !request.is_null()) {
+                    calls.push(object["resources"].clone());
+                }
+                for value in object.values() {
+                    collect(value, calls);
+                }
+            }
+            _ => {}
         }
     }
-    // Per-call profiles omit memory holes. Charge every hole in this entire PIE against
-    // the special-call step headroom, using the protocol weights (holes are not steps).
-    let costs =
-        blockifier::blockifier_versioned_constants::VersionedConstants::create_for_testing()
-            .os_constants
-            .gas_costs
-            .base
-            .clone();
-    let holes = output.runner_output.cairo_pie.execution_resources.n_memory_holes;
-    let measured =
-        measured_steps as u64 * costs.step_gas_cost + holes as u64 * costs.memory_hole_gas_cost;
-    let reserved = reserved_steps as u64 * costs.step_gas_cost;
-    eprintln!(
-        "batch step gas plus all PIE holes: {measured}, reserved: {reserved}, holes: {holes}"
-    );
-    assert!(measured <= reserved, "batch step allowance must cover all PIE memory-hole gas");
+    let mut calls = Vec::new();
+    collect(&trace, &mut calls);
+    assert_eq!(calls.len(), cases.len());
+    use blockifier::execution::syscalls::committed_data::{
+        CommittedDataReadSet,
+        read_values_shared,
+    };
+    use cairo_vm::vm::runners::cairo_runner::ExecutionResources;
+    let mut actual = ExecutionResources::default();
+    let mut reserved = ExecutionResources::default();
+    let cache = CommittedDataReadSet::default();
+    for (profile, (root, keys, _, _)) in calls.iter().zip(cases) {
+        let profile: ExecutionResources = serde_json::from_value(profile.clone()).unwrap();
+        actual += &profile;
+        let mut calldata = vec![root, Felt::from(keys.len())];
+        calldata.extend_from_slice(&keys);
+        let (_, extra) = read_values_shared(
+            true,
+            &pricing_witnesses,
+            &cache,
+            selector_from_name("get_values").0,
+            &calldata,
+            &mut u64::MAX,
+            &mut None,
+        )
+        .unwrap();
+        reserved += &(&get_const_syscall_resources(SyscallSelector::CallContract) + &extra);
+    }
+    for finalization in &output.runner_output.committed_data_finalizations {
+        actual += finalization;
+    }
+    // Conservatively include every PIE memory hole, including ordinary contract bytecode.
+    actual.n_memory_holes = output.runner_output.cairo_pie.execution_resources.n_memory_holes;
+    let constants =
+        blockifier::blockifier_versioned_constants::VersionedConstants::create_for_testing();
+    let gas = &constants.os_constants.gas_costs;
+    let proving = blockifier::bouncer::BuiltinWeights::default().gas_costs;
+    for costs in [&gas.builtins, &proving] {
+        let actual_gas =
+            blockifier::utils::get_gas_cost_from_vm_resources(&actual, &gas.base, costs);
+        let reserved_gas =
+            blockifier::utils::get_gas_cost_from_vm_resources(&reserved, &gas.base, costs);
+        assert!(
+            actual_gas <= reserved_gas,
+            "call plus finalization: {actual:?}, reservation: {reserved:?}"
+        );
+    }
+    eprintln!("committed-data call plus finalization actual={actual:?} reserved={reserved:?}");
+}
+
+/// A canonical revert is omitted by SNOS. Its discarded read set must not discount the next
+/// transaction; successful calls may share within a block, and the next block starts cold.
+#[tokio::test]
+async fn committed_data_shared_reads_follow_reverts_and_block_boundaries() {
+    use blockifier::execution::syscalls::committed_data::CommittedDataSet;
+    let contract = FeatureContract::TestContract(CairoVersion::Cairo1(RunnableCairo1::Casm));
+    let (mut builder, [reader]) =
+        TestBuilder::create_standard([(contract, calldata![Felt::ZERO, Felt::ZERO])]).await;
+    let tree =
+        CommittedDataSet::new((0..16).map(|key| (Felt::from(key), Felt::from(key + 7))).collect())
+            .unwrap();
+    let witnesses = vec![tree.witness(Felt::ONE).unwrap()];
+    builder.initial_state.block_context.use_committed_data = true;
+    builder.os_hints_config.use_committed_data = true;
+    builder.initial_state.block_context.committed_data_witnesses =
+        Arc::new(CommittedDataWitnesses::new(witnesses.clone()).unwrap());
+    builder.os_hints_config.committed_data_witnesses = witnesses;
+    for block in 0..2 {
+        if block != 0 {
+            builder.move_to_next_block();
+        }
+        for must_revert in [true, false, false] {
+            let calldata = create_calldata(
+                reader,
+                "test_committed_data_catch",
+                &[
+                    tree.root(),
+                    Felt::ONE,
+                    Felt::ONE,
+                    Felt::from(u8::from(must_revert)),
+                    Felt::from(3),
+                ],
+            );
+            let tx = builder.create_funded_account_invoke(invoke_tx_args! { calldata });
+            builder.add_invoke_tx(tx, must_revert.then(String::new), None);
+        }
+    }
+    let output = builder.build().await.run();
+    output.perform_default_validations();
+    output.runner_output.cairo_pie.run_validity_checks().unwrap();
+    assert_eq!(output.runner_output.committed_data_finalizations.len(), 2);
 }

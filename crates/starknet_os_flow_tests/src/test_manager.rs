@@ -1,3 +1,6 @@
+#[path = "committed_data_full_trade.rs"]
+mod committed_data_full_trade;
+
 use std::collections::{HashMap, HashSet};
 use std::sync::LazyLock;
 

@@ -38,9 +38,13 @@ use crate::hints::hint_implementation::cairo1_revert::implementation::{
     write_storage_key_for_revert,
 };
 use crate::hints::hint_implementation::committed_data::{
+    end_committed_data_finalization,
     load_committed_data_batch,
+    load_committed_data_deferred,
+    load_committed_data_root_union,
     load_committed_data_witness,
     load_use_committed_data,
+    start_committed_data_finalization,
 };
 use crate::hints::hint_implementation::compiled_class::implementation::{
     assert_end_of_bytecode_segments,
@@ -474,6 +478,10 @@ define_hint_enum!(
     S,
     StateReader,
     (LoadCommittedDataWitness, load_committed_data_witness),
+    (LoadCommittedDataDeferred, load_committed_data_deferred),
+    (LoadCommittedDataRootUnion, load_committed_data_root_union),
+    (StartCommittedDataFinalization, start_committed_data_finalization),
+    (EndCommittedDataFinalization, end_committed_data_finalization),
     (LoadCommittedDataBatch, load_committed_data_batch),
     (LoadUseCommittedData, load_use_committed_data),
     (LoadClass, load_class),

@@ -3,12 +3,12 @@ use std::collections::HashMap;
 
 use apollo_starknet_os_program::OS_PROGRAM_BYTES;
 use blockifier::execution::syscalls::committed_data::{
-    branch,
-    leaf,
     CommittedDataBatchProof,
     CommittedDataSet,
     CommittedDataSibling,
     CommittedDataWitness,
+    branch,
+    leaf,
 };
 use blockifier::test_utils::dict_state_reader::DictStateReader;
 use cairo_vm::types::builtin_name::BuiltinName;
@@ -16,10 +16,10 @@ use cairo_vm::types::layout_name::LayoutName;
 use cairo_vm::vm::runners::cairo_runner::CairoArg;
 use starknet_os::hint_processor::snos_hint_processor::SnosHintProcessor;
 use starknet_os::test_utils::cairo_runner::{
-    initialize_cairo_runner,
+    EMPTY_BLOCK_INPUT,
     EntryPointRunnerConfig,
     ImplicitArg,
-    EMPTY_BLOCK_INPUT,
+    initialize_cairo_runner,
 };
 use starknet_types_core::felt::Felt;
 
@@ -141,6 +141,7 @@ fn batch_verifier_rejects_wrong_routing_even_when_the_hash_matches() {
     let right = leaf(Felt::ZERO, Felt::from(20));
     let root = branch(0, left, right);
     let proof = CommittedDataBatchProof {
+        branch_hashes: Vec::new(),
         proof: vec![Felt::TWO, Felt::ZERO, Felt::ONE, Felt::ZERO, Felt::ZERO, right],
         leaves: vec![Felt::ONE, Felt::from(10)],
         indices: vec![0],
@@ -158,6 +159,7 @@ fn batch_verifier_cannot_inflate_work_by_expanding_an_unrequested_subtree() {
         .unwrap();
     // All hashes and keys are correct. Only the right subtree was unnecessarily expanded.
     let proof = CommittedDataBatchProof {
+        branch_hashes: Vec::new(),
         proof: vec![
             Felt::TWO,
             Felt::ONE,

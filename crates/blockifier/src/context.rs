@@ -130,6 +130,8 @@ pub struct BlockContext {
     /// Allows committed-data reads for this execution. False rejects reads; the address stays
     /// reserved.
     pub use_committed_data: bool,
+    /// Charged read set for this block; speculative executions must use an isolated fork.
+    pub committed_data_read_set: crate::execution::syscalls::committed_data::CommittedDataReadSet,
     pub committed_data_witnesses:
         Arc<crate::execution::syscalls::committed_data::CommittedDataWitnesses>,
 }
@@ -148,7 +150,15 @@ impl BlockContext {
             bouncer_config,
             use_committed_data: false,
             committed_data_witnesses: Default::default(),
+            committed_data_read_set: Default::default(),
         }
+    }
+
+    /// Fork accounting together with transactional state. Publish only after admission succeeds.
+    pub fn fork_committed_data(&self) -> Self {
+        let mut fork = self.clone();
+        fork.committed_data_read_set = self.committed_data_read_set.fork();
+        fork
     }
 
     pub fn block_info(&self) -> &BlockInfo {

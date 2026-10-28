@@ -9,6 +9,8 @@ from starkware.cairo.common.cairo_builtins import (
     ModBuiltin,
     PoseidonBuiltin,
 )
+from starkware.cairo.common.default_dict import default_dict_new
+from starkware.starknet.core.os.execution.committed_data import committed_data_finalize
 from starkware.cairo.common.dict import dict_new
 from starkware.cairo.common.dict_access import DictAccess
 from starkware.cairo.common.math import assert_not_equal
@@ -201,8 +203,10 @@ func execute_blocks{
     // Initialize the carried outputs and the state changes dictionaries.
     let (messages_to_l1: MessageToL1Header*) = alloc();
     let (messages_to_l2: MessageToL2Header*) = alloc();
+    let (committed_data_cache: DictAccess*) = default_dict_new(0);
     tempvar initial_carried_outputs = new OsCarriedOutputs(
-        messages_to_l1=messages_to_l1, messages_to_l2=messages_to_l2
+        messages_to_l1=messages_to_l1, messages_to_l2=messages_to_l2,
+        committed_data_cache=committed_data_cache
     );
     let (
         contract_state_changes: DictAccess*, contract_class_changes: DictAccess*
@@ -224,6 +228,12 @@ func execute_blocks{
         execute_transactions(block_context=block_context);
     }
     let final_carried_outputs = outputs;
+
+    // Every cached certificate must originate from a verified miss in this block.
+    committed_data_finalize(
+        start=initial_carried_outputs.committed_data_cache,
+        end=final_carried_outputs.committed_data_cache,
+    );
 
     // Update the state.
     %{ EnterScopeWithAliases %}

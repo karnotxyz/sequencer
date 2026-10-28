@@ -137,6 +137,13 @@ define_string_enum! {
         (CommittedDataIndices),
         (CommittedDataBranchCount),
         (CommittedDataLeafCount),
+        (CommittedDataCacheStart),
+        (CommittedDataColdCount),
+        (CommittedDataColdKeys),
+        (CommittedDataColdValues),
+        (CommittedDataProofEnd),
+        (CommittedDataBitwisePtr, "bitwise_ptr"),
+        (CommittedPoseidonPtr, "poseidon_ptr"),
 
         (AccountDeploymentData),
         (AccountDeploymentDataSize),

@@ -73,6 +73,8 @@ struct MessageToL2Header {
 struct OsCarriedOutputs {
     messages_to_l1: MessageToL1Header*,
     messages_to_l2: MessageToL2Header*,
+    // Private proof cache: carried across calls and transactions, never published or reverted.
+    committed_data_cache: DictAccess*,
 }
 
 func serialize_os_output{
@@ -145,7 +147,8 @@ func serialize_os_output{
 }
 
 func os_carried_outputs_new(
-    messages_to_l1: MessageToL1Header*, messages_to_l2: MessageToL2Header*
+    messages_to_l1: MessageToL1Header*, messages_to_l2: MessageToL2Header*,
+    committed_data_cache: DictAccess*
 ) -> (os_carried_outputs: OsCarriedOutputs*) {
     let (fp_val, pc_val) = get_fp_and_pc();
     static_assert OsCarriedOutputs.SIZE == Args.SIZE;

@@ -24,6 +24,13 @@ use super::vm_syscall_utils::SyscallExecutorBaseError;
 /// `starknet_keccak("committed_data_v1")`. Permanently reserved by this OS version.
 pub const COMMITTED_DATA_ADDRESS: Felt =
     Felt::from_hex_unchecked("0x6c5f4559c7041984537bc078c71443fdc58b2e1bab302b341ec12b3d2cec44");
+mod sharing;
+pub use sharing::{
+    CommittedDataReadSet,
+    read_values_shared,
+    resources_gas,
+    shared_request_resources,
+};
 mod batch;
 pub use batch::CommittedDataBatchProof;
 mod mpt;

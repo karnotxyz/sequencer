@@ -4,14 +4,14 @@ use std::collections::{BTreeMap, HashMap};
 use starknet_types_core::felt::Felt;
 
 use super::{
-    branch,
-    key_bit,
-    leaf,
+    COMMITTED_DATA_TREE_HEIGHT,
     CommittedDataError,
     CommittedDataSet,
     CommittedDataWitness,
-    COMMITTED_DATA_TREE_HEIGHT,
     MAX_COMMITTED_DATA_READ_KEYS,
+    branch,
+    key_bit,
+    leaf,
 };
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -30,6 +30,8 @@ pub struct CommittedDataBatchProof {
     pub leaves: Vec<Felt>,
     pub indices: Vec<usize>,
     pub branches: usize,
+    /// Authenticated expanded-node identities, in preorder, for block-local work accounting.
+    pub branch_hashes: Vec<Felt>,
 }
 
 impl CommittedDataBatchProof {
@@ -38,9 +40,21 @@ impl CommittedDataBatchProof {
     pub fn new(
         root: Felt,
         keys: &[Felt],
+        witness: impl FnMut(Felt) -> Result<Option<CommittedDataWitness>, CommittedDataError>,
+    ) -> Result<Self, CommittedDataError> {
+        if keys.len() > MAX_COMMITTED_DATA_READ_KEYS {
+            return Err(CommittedDataError::InvalidLength);
+        }
+        Self::new_for_read_set(root, keys, witness)
+    }
+
+    /// Build the final block read-set union, bounded independently of the per-call ABI.
+    pub fn new_for_read_set(
+        root: Felt,
+        keys: &[Felt],
         mut witness: impl FnMut(Felt) -> Result<Option<CommittedDataWitness>, CommittedDataError>,
     ) -> Result<Self, CommittedDataError> {
-        if keys.is_empty() || keys.len() > MAX_COMMITTED_DATA_READ_KEYS {
+        if keys.is_empty() || keys.len() > super::MAX_COMMITTED_DATA_WITNESSES {
             return Err(CommittedDataError::InvalidLength);
         }
         let mut unique = BTreeMap::new();
@@ -79,7 +93,13 @@ impl CommittedDataBatchProof {
             unique.insert(key, leaves.len() / 2);
             leaves.extend([key, witness.value]);
         }
-        let mut result = Self { proof: Vec::new(), leaves, indices: Vec::new(), branches: 0 };
+        let mut result = Self {
+            proof: Vec::new(),
+            leaves,
+            indices: Vec::new(),
+            branches: 0,
+            branch_hashes: Vec::new(),
+        };
         result.indices = keys.iter().map(|key| unique[key]).collect();
         let mut requested: Vec<_> = unique.into_iter().collect();
         result.emit(root, COMMITTED_DATA_TREE_HEIGHT, &nodes, &mut requested)?;
@@ -101,6 +121,7 @@ impl CommittedDataBatchProof {
             leaves: Vec::new(),
             indices: Vec::with_capacity(keys.len()),
             branches: 0,
+            branch_hashes: Vec::new(),
         };
         for key in keys {
             let index = if let Some(index) = unique.get(key) {
@@ -138,6 +159,7 @@ impl CommittedDataBatchProof {
             let node = tree.branches()[id - count];
             let split = keys.partition_point(|(key, _)| !key_bit(*key, node.bit));
             self.branches += 1;
+            self.branch_hashes.push(node.hash);
             self.proof.extend([Felt::TWO, Felt::from(node.bit)]);
             self.emit_dataset(tree, node.left as usize, &keys[..split]);
             self.emit_dataset(tree, node.right as usize, &keys[split..]);
@@ -174,6 +196,7 @@ impl CommittedDataBatchProof {
                     return Err(CommittedDataError::InvalidWitness);
                 }
                 self.branches += 1;
+                self.branch_hashes.push(hash);
                 self.proof.extend([Felt::TWO, Felt::from(*bit)]);
                 // Membership witnesses need not reveal the canonical shape of opaque subtrees.
                 // Partition by this branch's bit rather than assuming numerical key order.

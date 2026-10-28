@@ -514,6 +514,7 @@ func consume_l1_to_l2_message{outputs: OsCarriedOutputs*}(
         messages_to_l1=outputs.messages_to_l1,
         messages_to_l2=outputs.messages_to_l2 + MessageToL2Header.SIZE +
         outputs.messages_to_l2.payload_size,
+        committed_data_cache=outputs.committed_data_cache,
     );
     return ();
 }

@@ -200,6 +200,7 @@ impl BlockContext {
             bouncer_config: BouncerConfig::max(),
             use_committed_data: false,
             committed_data_witnesses: Default::default(),
+            committed_data_read_set: Default::default(),
         }
     }
 
@@ -211,6 +212,7 @@ impl BlockContext {
             bouncer_config: BouncerConfig::max(),
             use_committed_data: false,
             committed_data_witnesses: Default::default(),
+            committed_data_read_set: Default::default(),
         }
     }
 
