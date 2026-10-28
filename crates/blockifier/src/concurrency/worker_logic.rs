@@ -435,8 +435,8 @@ impl<U: UpdatableState> WorkerExecutor<U> {
         record_transaction_executor_metrics(metrics);
         log::debug!(
             "Concurrent execution done. Number of transactions: {n_txs}; Committed chunk size: \
-             {n_committed_txs}; Execute counter: {}; Validate counter: {}; Abort counter: {}; Abort \
-             in commit counter: {}",
+             {n_committed_txs}; Execute counter: {}; Validate counter: {}; Abort counter: {}; \
+             Abort in commit counter: {}",
             metrics.execution_attempts,
             metrics.validation_attempts,
             metrics.aborts,
