@@ -1,9 +1,9 @@
 use std::sync::Arc;
 
 use blockifier::execution::syscalls::committed_data::{
+    read_os_resources,
     CommittedDataWitness,
     CommittedDataWitnesses,
-    read_os_resources,
 };
 use blockifier::execution::syscalls::vm_syscall_utils::SyscallSelector;
 use blockifier::test_utils::dict_state_reader::DictStateReader;
@@ -22,10 +22,10 @@ fn witness(value: Felt, index: u32, height: usize) -> CommittedDataWitness {
 
 fn witness_for_key(value: Felt, key: Felt, height: usize) -> CommittedDataWitness {
     use blockifier::execution::syscalls::committed_data::{
-        CommittedDataSibling,
         branch,
         key_bit,
         leaf,
+        CommittedDataSibling,
     };
     let siblings: Vec<_> = (0..height)
         .map(|i| CommittedDataSibling { bit: i as u8, hash: Felt::from(i + 100) })
@@ -268,7 +268,7 @@ async fn committed_data_bad_witness_is_rejected_during_replay() {
     // Replay rejects it before choosing a gas result; the direct single-read test separately
     // checks that Cairo rejects forged hints even when Rust validation is bypassed.
     assert!(
-        error.contains("Invalid committed-data membership witness"),
+        error.contains("Committed-data witness does not match its root"),
         "unexpected error: {error}"
     );
 }
@@ -438,10 +438,10 @@ async fn committed_data_virtual_os_uses_standard_config_hash() {
 #[tokio::test]
 async fn committed_data_batches_match_os_and_bound_resources() {
     use blockifier::execution::syscalls::committed_data::{
-        COMMITTED_DATA_ADDRESS,
+        leaf,
         CommittedDataBatchProof,
         CommittedDataSet,
-        leaf,
+        COMMITTED_DATA_ADDRESS,
     };
     use starknet_api::abi::abi_utils::selector_from_name;
     let contract = FeatureContract::TestContract(CairoVersion::Cairo1(RunnableCairo1::Casm));
@@ -531,8 +531,8 @@ async fn committed_data_batches_match_os_and_bound_resources() {
     collect(&trace, &mut calls);
     assert_eq!(calls.len(), cases.len());
     use blockifier::execution::syscalls::committed_data::{
-        CommittedDataReadSet,
         read_values_shared,
+        CommittedDataReadSet,
     };
     use cairo_vm::vm::runners::cairo_runner::ExecutionResources;
     let mut actual = ExecutionResources::default();

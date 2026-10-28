@@ -1,14 +1,14 @@
 //! Run the Cairo verifier directly so malformed hints cannot be rejected only by the Rust builder.
 use std::collections::HashMap;
 
-use apollo_starknet_os_program::OS_PROGRAM_BYTES;
+use apollo_starknet_os_program::test_programs::COMMITTED_DATA_TEST_BYTES;
 use blockifier::execution::syscalls::committed_data::{
+    branch,
+    leaf,
     CommittedDataBatchProof,
     CommittedDataSet,
     CommittedDataSibling,
     CommittedDataWitness,
-    branch,
-    leaf,
 };
 use blockifier::test_utils::dict_state_reader::DictStateReader;
 use cairo_vm::types::builtin_name::BuiltinName;
@@ -16,10 +16,10 @@ use cairo_vm::types::layout_name::LayoutName;
 use cairo_vm::vm::runners::cairo_runner::CairoArg;
 use starknet_os::hint_processor::snos_hint_processor::SnosHintProcessor;
 use starknet_os::test_utils::cairo_runner::{
-    EMPTY_BLOCK_INPUT,
+    initialize_cairo_runner,
     EntryPointRunnerConfig,
     ImplicitArg,
-    initialize_cairo_runner,
+    EMPTY_BLOCK_INPUT,
 };
 use starknet_types_core::felt::Felt;
 
@@ -36,7 +36,7 @@ fn verify(
             add_main_prefix_to_entrypoint: false,
             ..Default::default()
         },
-        OS_PROGRAM_BYTES,
+        COMMITTED_DATA_TEST_BYTES,
         entrypoint,
         &[
             ImplicitArg::Builtin(BuiltinName::range_check),

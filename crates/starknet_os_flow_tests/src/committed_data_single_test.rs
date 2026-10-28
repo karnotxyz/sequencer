@@ -1,6 +1,7 @@
 //! Exercise the Cairo entrypoint directly: Rust validation must not hide unconstrained hints.
 use std::collections::HashMap;
 
+use apollo_starknet_os_program::test_programs::COMMITTED_DATA_TEST_BYTES;
 use apollo_starknet_os_program::OS_PROGRAM_BYTES;
 use blockifier::execution::syscalls::committed_data::{
     batch_gas,
@@ -35,7 +36,7 @@ fn read_authenticated(
         "starkware.starknet.core.os.execution.committed_data.committed_data_read_one"
     };
     let builtins = if batch {
-        vec![BuiltinName::range_check, BuiltinName::poseidon, BuiltinName::bitwise]
+        vec![BuiltinName::range_check, BuiltinName::bitwise, BuiltinName::poseidon]
     } else {
         vec![BuiltinName::range_check, BuiltinName::poseidon]
     };
@@ -45,12 +46,18 @@ fn read_authenticated(
             add_main_prefix_to_entrypoint: false,
             ..Default::default()
         },
-        OS_PROGRAM_BYTES,
+        if batch { COMMITTED_DATA_TEST_BYTES } else { OS_PROGRAM_BYTES },
         entrypoint,
         &builtins.iter().copied().map(ImplicitArg::Builtin).collect::<Vec<_>>(),
         HashMap::new(),
     )?;
-    let mut args: Vec<_> = builtins
+    // Runner builtins use canonical order; the function takes poseidon before bitwise.
+    let function_builtins = if batch {
+        vec![BuiltinName::range_check, BuiltinName::poseidon, BuiltinName::bitwise]
+    } else {
+        builtins
+    };
+    let mut args: Vec<_> = function_builtins
         .iter()
         .map(|name| {
             CairoArg::Single(

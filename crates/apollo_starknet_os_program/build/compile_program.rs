@@ -46,6 +46,12 @@ pub async fn compile_test_contracts(out_dir: PathBuf) {
         "aliases_test",
         None,
     ));
+    task_set.spawn(compile_and_output_program(
+        out_dir,
+        "starkware/starknet/core/os/execution/committed_data_test.cairo",
+        "committed_data_test",
+        None,
+    ));
     task_set.join_all().await;
 }
 
