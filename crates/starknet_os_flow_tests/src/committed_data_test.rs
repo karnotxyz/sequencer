@@ -273,9 +273,9 @@ async fn committed_data_bad_witness_is_rejected_during_replay() {
     );
 }
 
-/// Opt-in integration: complete 30k/500k maps, hashed felt keys and two root publications each.
+/// Complete 30k/500k maps exercise hashed felt keys and two root publications each.
+/// Keep this self-contained integration in the regular suite so large-map replay cannot regress.
 #[tokio::test]
-#[ignore = "builds complete 30k and 500k maps with two root publications each"]
 async fn committed_data_full_500k_snapshot_os_pie() {
     use blockifier::execution::syscalls::committed_data::CommittedDataSet;
     let contract = FeatureContract::TestContract(CairoVersion::Cairo1(RunnableCairo1::Casm));

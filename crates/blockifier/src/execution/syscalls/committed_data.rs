@@ -477,7 +477,7 @@ mod tests {
     #[test]
     fn address_matches_versioned_namespace() {
         assert_eq!(COMMITTED_DATA_ADDRESS, selector_from_name("committed_data_v1").0);
-        assert_ne!(COMMITTED_DATA_ADDRESS, selector_from_name("paradox_oracle_tick").0);
+        assert_ne!(COMMITTED_DATA_ADDRESS, selector_from_name("committed_data_v2").0);
     }
 
     #[test]
