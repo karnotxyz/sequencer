@@ -706,6 +706,7 @@ func execute_deprecated_syscalls{
         messages_to_l1=outputs.messages_to_l1 + MessageToL1Header.SIZE +
         outputs.messages_to_l1.payload_size,
         messages_to_l2=outputs.messages_to_l2,
+        committed_data_cache=outputs.committed_data_cache,
     );
     %{ OsLoggerExitSyscall %}
     return execute_deprecated_syscalls(

@@ -356,7 +356,7 @@ impl<S: StateReader> WorkerExecutor<S> {
                 &tx_state_changes_keys,
                 &execution_summary,
                 &tx_execution_info.summarize_builtins(),
-                &tx_execution_info.receipt.resources,
+                &tx_execution_info.bouncer_resources(),
                 &self.block_context.versioned_constants,
                 tx_execution_info.receipt.gas.l2_gas,
             );
@@ -435,8 +435,8 @@ impl<U: UpdatableState> WorkerExecutor<U> {
         record_transaction_executor_metrics(metrics);
         log::debug!(
             "Concurrent execution done. Number of transactions: {n_txs}; Committed chunk size: \
-             {n_committed_txs}; Execute counter: {}; Validate counter: {}; Abort counter: {}; Abort \
-             in commit counter: {}",
+             {n_committed_txs}; Execute counter: {}; Validate counter: {}; Abort counter: {}; \
+             Abort in commit counter: {}",
             metrics.execution_attempts,
             metrics.validation_attempts,
             metrics.aborts,

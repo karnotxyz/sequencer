@@ -2,8 +2,8 @@ use std::sync::Arc;
 
 use starknet_api::executable_transaction::L1HandlerTransaction;
 use starknet_api::execution_resources::GasAmount;
-use starknet_api::transaction::fields::{Fee, TransactionSignature};
 use starknet_api::transaction::TransactionVersion;
+use starknet_api::transaction::fields::{Fee, TransactionSignature};
 
 use super::objects::RevertError;
 use crate::context::BlockContext;
@@ -75,8 +75,15 @@ impl<U: UpdatableState> ExecutableTransaction<U> for L1HandlerTransaction {
         // Create a copy of the state for the execution. It will be rolled back if the execution is
         // reverted or committed upon success.
         let mut execution_state = TransactionalState::create_transactional(state);
+        let read_checkpoint = block_context.committed_data_read_set.fork();
         let execution_result =
             self.run_execute(&mut execution_state, &mut context, &mut remaining_gas);
+        // An availability or proof-budget failure must not become a canonical L1 revert.
+        // In particular, catching an inner syscall error cannot publish unpaid proof work.
+        if let Some(error) = context.committed_data_failure.take() {
+            execution_state.abort();
+            return Err(error.into());
+        }
         match execution_result {
             Ok(execute_call_info) => {
                 let receipt = TransactionReceipt::from_l1_handler(
@@ -115,6 +122,7 @@ impl<U: UpdatableState> ExecutableTransaction<U> for L1HandlerTransaction {
                         Ok(l1_handler_tx_execution_info(execute_call_info, receipt, None))
                     }
                     Err(fee_check_error) => {
+                        block_context.committed_data_read_set.replace_with(&read_checkpoint);
                         // Post-execution check failed. Revert the execution.
                         execution_state.abort();
                         let receipt = TransactionReceipt::reverted_l1_handler(
@@ -130,6 +138,7 @@ impl<U: UpdatableState> ExecutableTransaction<U> for L1HandlerTransaction {
                 }
             }
             Err(execution_error) => {
+                block_context.committed_data_read_set.replace_with(&read_checkpoint);
                 execution_state.abort();
                 let receipt =
                     TransactionReceipt::reverted_l1_handler(&tx_context, l1_handler_payload_size);

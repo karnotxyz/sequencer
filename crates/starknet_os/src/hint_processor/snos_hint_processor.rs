@@ -1,10 +1,10 @@
 use std::any::Any;
 use std::collections::btree_map::IntoIter;
-use std::collections::{BTreeMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 
 use blockifier::execution::call_info::CallExecution;
 use blockifier::execution::syscalls::secp::SecpHintProcessor;
-use blockifier::execution::syscalls::vm_syscall_utils::{execute_next_syscall, SyscallUsageMap};
+use blockifier::execution::syscalls::vm_syscall_utils::{SyscallUsageMap, execute_next_syscall};
 use blockifier::state::state_api::StateReader;
 #[cfg(any(feature = "testing", test))]
 use blockifier::test_utils::dict_state_reader::DictStateReader;
@@ -122,6 +122,13 @@ pub struct SnosHintProcessor<'a, S: StateReader> {
     pub(crate) program: &'a Program,
     pub(crate) execution_helpers_manager: ExecutionHelpersManager<'a, S>,
     pub(crate) os_hints_config: OsHintsConfig,
+    committed_data_index: HashMap<(Option<u64>, Felt, Felt), usize>,
+    pub(crate) committed_data_billing:
+        HashMap<u64, blockifier::execution::syscalls::committed_data::CommittedDataReadSet>,
+    pub(crate) committed_root_branch_cache: HashSet<(Relocatable, Felt)>,
+    pub(crate) committed_finalization_start: Option<(usize, Relocatable, Relocatable, Relocatable)>,
+    pub(crate) committed_finalizations:
+        Vec<cairo_vm::vm::runners::cairo_runner::ExecutionResources>,
     pub(crate) deprecated_compiled_classes_iter: IntoIter<ClassHash, ContractClass>,
     pub(crate) deprecated_class_hashes: HashSet<ClassHash>,
     pub(crate) compiled_classes: BTreeMap<CompiledClassHash, CasmContractClass>,
@@ -158,6 +165,39 @@ impl<'a, S: StateReader> SnosHintProcessor<'a, S> {
             )
             .into());
         }
+        let witnesses = &os_hints_config.committed_data_witnesses;
+        if witnesses.len()
+            > blockifier::execution::syscalls::committed_data::MAX_COMMITTED_DATA_WITNESSES
+        {
+            return Err(OsInputError::CommittedData("Too many witnesses".into()).into());
+        }
+        let mut committed_data_index = HashMap::with_capacity(witnesses.len());
+        for (offset, witness) in witnesses.iter().enumerate() {
+            let key = (None, witness.root, witness.key);
+            if committed_data_index.insert(key, offset).is_some() {
+                return Err(OsInputError::CommittedData("Duplicate witness".into()).into());
+            }
+        }
+        for block in &os_block_inputs {
+            if block.committed_data_witnesses.len()
+                > blockifier::execution::syscalls::committed_data::MAX_COMMITTED_DATA_WITNESSES
+            {
+                return Err(OsInputError::CommittedData("Too many block witnesses".into()).into());
+            }
+            if !witnesses.is_empty() && !block.committed_data_witnesses.is_empty() {
+                return Err(
+                    OsInputError::CommittedData("Mixed legacy and block witnesses".into()).into()
+                );
+            }
+            for (offset, witness) in block.committed_data_witnesses.iter().enumerate() {
+                let key = (Some(block.block_info.block_number.0), witness.root, witness.key);
+                if committed_data_index.insert(key, offset).is_some() {
+                    return Err(
+                        OsInputError::CommittedData("Duplicate block witness".into()).into()
+                    );
+                }
+            }
+        }
         let rng_seed = Self::rng_seed(&os_block_inputs, &os_hints_config.rng_seed_salt);
         let execution_helpers = os_block_inputs
             .into_iter()
@@ -175,6 +215,11 @@ impl<'a, S: StateReader> SnosHintProcessor<'a, S> {
             program: os_program,
             execution_helpers_manager: ExecutionHelpersManager::new(execution_helpers),
             os_hints_config,
+            committed_data_index,
+            committed_data_billing: HashMap::new(),
+            committed_root_branch_cache: HashSet::new(),
+            committed_finalization_start: None,
+            committed_finalizations: Vec::new(),
             da_segment: None,
             builtin_hint_processor: BuiltinHintProcessor::new_empty(),
             deprecated_class_hashes: deprecated_compiled_classes.keys().copied().collect(),
@@ -187,6 +232,22 @@ impl<'a, S: StateReader> SnosHintProcessor<'a, S> {
             #[cfg(any(test, feature = "testing"))]
             unused_hints: AllHints::all_iter().collect(),
         })
+    }
+
+    pub(crate) fn committed_data_witness(
+        &self,
+        root: Felt,
+        index: Felt,
+    ) -> Option<&blockifier::execution::syscalls::committed_data::CommittedDataWitness> {
+        let block = self.get_current_execution_helper().ok()?.os_block_input;
+        if let Some(offset) =
+            self.committed_data_index.get(&(Some(block.block_info.block_number.0), root, index))
+        {
+            return block.committed_data_witnesses.get(*offset);
+        }
+        self.committed_data_index
+            .get(&(None, root, index))
+            .and_then(|offset| self.os_hints_config.committed_data_witnesses.get(*offset))
     }
 
     /// Hashes the block hashes of the given block inputs to get a seed for the random number
@@ -419,5 +480,82 @@ pub struct DeprecatedSyscallHintProcessor {
 impl DeprecatedSyscallHintProcessor {
     pub fn set_syscall_ptr(&mut self, syscall_ptr: Relocatable) {
         self.syscall_ptr = Some(syscall_ptr);
+    }
+}
+
+#[cfg(test)]
+mod committed_witness_tests {
+    use blockifier::execution::syscalls::committed_data::{
+        CommittedDataWitness,
+        MAX_COMMITTED_DATA_WITNESSES,
+    };
+    use starknet_api::block::BlockNumber;
+
+    use super::*;
+
+    // Index construction does not authenticate values: the Cairo program does that during replay.
+    // Distinct keys exercise the actual index bound without constructing 65k cryptographic proofs.
+    fn block(number: u64, count: usize) -> OsBlockInput {
+        let mut block = OsBlockInput::default();
+        block.block_info.block_number = BlockNumber(number);
+        block.committed_data_witnesses = (0..count)
+            .map(|key| CommittedDataWitness {
+                root: Felt::ONE,
+                key: Felt::from(key),
+                value: Felt::from(number),
+                siblings: Vec::new(),
+            })
+            .collect();
+        block
+    }
+
+    #[test]
+    fn multi_block_private_input_has_independent_witness_limits_and_lookup() {
+        let program = Program::default();
+        let first = block(7, MAX_COMMITTED_DATA_WITNESSES);
+        let second = block(8, MAX_COMMITTED_DATA_WITNESSES);
+        let mut processor = SnosHintProcessor::new(
+            &program,
+            OsHintsConfig::default(),
+            vec![&first, &second],
+            BTreeMap::new(),
+            BTreeMap::new(),
+            vec![DictStateReader::default(), DictStateReader::default()],
+        )
+        .unwrap();
+        assert_eq!(processor.committed_data_index.len(), 2 * MAX_COMMITTED_DATA_WITNESSES);
+        for number in [7, 8] {
+            processor.execution_helpers_manager.increment_current_helper_index();
+            assert_eq!(
+                processor.committed_data_witness(Felt::ONE, Felt::ZERO).unwrap().value,
+                Felt::from(number)
+            );
+        }
+    }
+
+    #[rstest::rstest]
+    #[case::oversized(0, "Too many block witnesses")]
+    #[case::duplicate(1, "Duplicate block witness")]
+    #[case::mixed_legacy(2, "Mixed legacy and block witnesses")]
+    fn malformed_block_witness_inputs_are_rejected(#[case] case: u8, #[case] expected: &str) {
+        let program = Program::default();
+        let mut input = block(7, if case == 0 { MAX_COMMITTED_DATA_WITNESSES + 1 } else { 1 });
+        let mut config = OsHintsConfig::default();
+        if case == 1 {
+            input.committed_data_witnesses.push(input.committed_data_witnesses[0].clone());
+        }
+        if case == 2 {
+            config.committed_data_witnesses = input.committed_data_witnesses.clone();
+        }
+        let result = SnosHintProcessor::new(
+            &program,
+            config,
+            vec![&input],
+            BTreeMap::new(),
+            BTreeMap::new(),
+            vec![DictStateReader::default()],
+        );
+        let error = result.err().expect("invalid witness input must be rejected");
+        assert!(error.to_string().contains(expected), "{error}");
     }
 }

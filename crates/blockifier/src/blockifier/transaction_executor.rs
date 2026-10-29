@@ -15,12 +15,12 @@ use crate::bouncer::{Bouncer, BouncerWeights, CasmHashComputationData};
 use crate::concurrency::worker_logic::WorkerExecutor;
 use crate::concurrency::worker_pool::WorkerPool;
 use crate::context::BlockContext;
-use crate::metrics::{record_transaction_executor_metrics, TransactionExecutorMetrics};
+use crate::metrics::{TransactionExecutorMetrics, record_transaction_executor_metrics};
 use crate::state::cached_state::{CachedState, CommitmentStateDiff, StateMaps, TransactionalState};
 use crate::state::compiled_class_hash_migration::CompiledClassHashMigrationUpdater;
 use crate::state::errors::StateError;
 use crate::state::state_api::{StateReader, StateResult};
-use crate::state::stateful_compression::{allocate_aliases_in_storage, compress, CompressionError};
+use crate::state::stateful_compression::{CompressionError, allocate_aliases_in_storage, compress};
 use crate::transaction::errors::TransactionExecutionError;
 use crate::transaction::objects::TransactionExecutionInfo;
 use crate::transaction::transaction_execution::Transaction;
@@ -127,10 +127,11 @@ impl<S: StateReader> TransactionExecutor<S> {
 
     fn new_with_pool(
         block_state: CachedState<S>,
-        block_context: BlockContext,
+        mut block_context: BlockContext,
         config: TransactionExecutorConfig,
         worker_pool: Option<Arc<WorkerPool<CachedState<S>>>>,
     ) -> Self {
+        block_context.committed_data_read_set = Default::default();
         let bouncer_config = block_context.bouncer_config.clone();
         // Note: the state might not be empty even at this point; it is the creator's
         // responsibility to tune the bouncer according to pre and post block process.
@@ -156,8 +157,9 @@ impl<S: StateReader> TransactionExecutor<S> {
 
         // Executing a single transaction cannot be done in a concurrent mode.
         let concurrency_mode = false;
+        let transaction_context = self.block_context.fork_committed_data();
         let tx_execution_result =
-            tx.execute_raw(&mut transactional_state, &self.block_context, concurrency_mode);
+            tx.execute_raw(&mut transactional_state, &transaction_context, concurrency_mode);
         match tx_execution_result {
             Ok(tx_execution_info) => {
                 let state_diff = transactional_state.to_state_diff()?.state_maps;
@@ -167,16 +169,27 @@ impl<S: StateReader> TransactionExecutor<S> {
                     &tx_state_changes_keys,
                     &tx_execution_info.summarize(&self.block_context.versioned_constants),
                     &tx_execution_info.summarize_builtins(),
-                    &tx_execution_info.receipt.resources,
+                    &tx_execution_info.bouncer_resources(),
                     &self.block_context.versioned_constants,
                     tx_execution_info.receipt.gas.l2_gas,
                 )?;
                 transactional_state.commit();
+                self.block_context
+                    .committed_data_read_set
+                    .replace_with(&transaction_context.committed_data_read_set);
 
                 Ok((tx_execution_info, state_diff))
             }
             Err(error) => {
                 transactional_state.abort();
+                // A witness allowance exhausted by earlier transactions closes this block.
+                // Retry once on an empty block; a transaction exceeding the allowance there
+                // remains a permanent transaction error, so it cannot loop through empty blocks.
+                if matches!(&error, crate::transaction::errors::TransactionExecutionError::CommittedDataAvailability(
+                    crate::execution::syscalls::committed_data::CommittedDataError::TooManyWitnesses
+                )) && !self.block_context.committed_data_read_set.is_empty() {
+                    return Err(TransactionExecutorError::BlockFull);
+                }
                 Err(TransactionExecutorError::TransactionExecutionError(error))
             }
         }
@@ -371,7 +384,8 @@ impl<S: StateReader + Send + Sync> TransactionExecutor<S> {
     where
         S: 'static,
     {
-        if !self.config.concurrency_config.enabled {
+        // Read-set discounts follow accepted block order; speculative workers must not warm them.
+        if !self.config.concurrency_config.enabled || self.block_context.use_committed_data {
             log::debug!("Executing transactions sequentially.");
             self.execute_txs_sequentially(txs, execution_deadline)
         } else {

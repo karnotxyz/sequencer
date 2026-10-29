@@ -48,8 +48,8 @@ use cairo_vm::vm::errors::vm_errors::VirtualMachineError;
 use cairo_vm::vm::vm_core::VirtualMachine;
 use starknet_api::abi::abi_utils::selector_from_name;
 use starknet_api::execution_resources::GasAmount;
-use starknet_api::transaction::constants::EXECUTE_ENTRY_POINT_NAME;
 use starknet_api::transaction::TransactionVersion;
+use starknet_api::transaction::constants::EXECUTE_ENTRY_POINT_NAME;
 use starknet_api::versioned_constants_logic::VersionedConstantsTrait;
 use starknet_types_core::felt::Felt;
 
@@ -57,12 +57,12 @@ use crate::hint_processor::execution_helper::ExecutionHelperError;
 use crate::hint_processor::snos_hint_processor::SnosHintProcessor;
 use crate::hints::vars::CairoStruct;
 use crate::vm_utils::{
+    IdentifierGetter,
+    VmUtilsError,
     get_address_of_nested_fields_from_base_address,
     get_field_offset,
     get_size_of_cairo_struct,
     write_to_temp_segment,
-    IdentifierGetter,
-    VmUtilsError,
 };
 
 #[derive(Debug, thiserror::Error)]
@@ -179,6 +179,58 @@ impl<S: StateReader> SyscallExecutor for SnosHintProcessor<'_, S> {
     ) -> Result<CallContractResponse, Self::Error> {
         if request.function_selector == selector_from_name(EXECUTE_ENTRY_POINT_NAME) {
             return Err(handle_failure(INVALID_ARGUMENT_FELT));
+        }
+        if *request.contract_address.0.key()
+            == blockifier::execution::syscalls::committed_data::COMMITTED_DATA_ADDRESS
+        {
+            let invalid = |info: &str| SyscallExecutorBaseError::InvalidSyscallInput {
+                input: request.function_selector.0,
+                info: info.into(),
+            };
+            if !syscall_handler.os_hints_config.use_committed_data {
+                return Err(invalid("committed-data reads require use_committed_data=true").into());
+            }
+            use blockifier::execution::syscalls::committed_data::{
+                CommittedDataWitnesses,
+                read_keys,
+                read_values_shared,
+            };
+            let (keys, _) = read_keys(request.function_selector.0, &request.calldata.0)?;
+            let root = request.calldata.0[0];
+            let unique: std::collections::BTreeSet<_> = keys.iter().copied().collect();
+            let witnesses = unique
+                .into_iter()
+                .map(|key| {
+                    syscall_handler
+                        .committed_data_witness(root, key)
+                        .cloned()
+                        .ok_or_else(|| invalid("Committed-data witness unavailable"))
+                })
+                .collect::<Result<Vec<_>, _>>()?;
+            let witnesses = CommittedDataWitnesses::new(witnesses)
+                .map_err(|error| invalid(&error.to_string()))?;
+            let block = syscall_handler
+                .get_current_execution_helper()?
+                .os_block_input
+                .block_info
+                .block_number
+                .0;
+            let read_set = syscall_handler.committed_data_billing.entry(block).or_default();
+            let (values, _) = read_values_shared(
+                true,
+                &witnesses,
+                read_set,
+                request.function_selector.0,
+                &request.calldata.0,
+                remaining_gas,
+                &mut None,
+            )?;
+            let values: Vec<MaybeRelocatable> = values.into_iter().map(Into::into).collect();
+            // Cairo independently constrains every returned value, order and gas charge.
+            let start_ptr = vm.add_memory_segment();
+            vm.load_data(start_ptr, &values)?;
+            let segment = ReadOnlySegment { start_ptr, length: values.len() };
+            return Ok(CallContractResponse { segment });
         }
         call_contract_helper(vm, syscall_handler, remaining_gas)
     }

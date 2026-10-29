@@ -12,10 +12,10 @@ use starknet_api::executable_transaction::{
 };
 use starknet_api::transaction::fields::{AccountDeploymentData, Calldata, ProofFacts};
 use starknet_api::transaction::{
-    constants,
     DeclareTransactionV2,
     DeclareTransactionV3,
     TransactionVersion,
+    constants,
 };
 
 use crate::context::{BlockContext, GasCounter, TransactionContext};
@@ -60,12 +60,16 @@ pub trait ExecutableTransaction<U: UpdatableState>: Sized {
         log::debug!("Executing Transaction...");
         let mut transactional_state = TransactionalState::create_transactional(state);
         let concurrency_mode = false;
+        let transaction_context = block_context.fork_committed_data();
         let execution_result =
-            self.execute_raw(&mut transactional_state, block_context, concurrency_mode);
+            self.execute_raw(&mut transactional_state, &transaction_context, concurrency_mode);
 
         match execution_result {
             Ok(value) => {
                 transactional_state.commit();
+                block_context
+                    .committed_data_read_set
+                    .replace_with(&transaction_context.committed_data_read_set);
                 log::debug!("Transaction execution complete and committed.");
                 Ok(value)
             }

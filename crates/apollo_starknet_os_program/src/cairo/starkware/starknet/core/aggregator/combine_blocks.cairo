@@ -1,3 +1,4 @@
+from starkware.cairo.common.dict import DictAccess
 from starkware.cairo.common.math import assert_le
 from starkware.cairo.common.memcpy import memcpy
 from starkware.starknet.core.os.output import (
@@ -35,6 +36,7 @@ func copy_l1l2_messages(
     tempvar res = new OsCarriedOutputs(
         messages_to_l1=cast(res_messages_to_l1, MessageToL1Header*),
         messages_to_l2=cast(res_messages_to_l2, MessageToL2Header*),
+        committed_data_cache=cast(0, DictAccess*),
     );
 
     return res;

@@ -20,7 +20,7 @@ use starknet_api::transaction::fields::{
     TransactionSignature,
     ValidResourceBounds,
 };
-use starknet_api::transaction::{constants, TransactionHash, TransactionVersion};
+use starknet_api::transaction::{TransactionHash, TransactionVersion, constants};
 use starknet_types_core::felt::Felt;
 
 use super::errors::ResourceBoundsError;
@@ -37,16 +37,16 @@ use crate::execution::entry_point::{
     SierraGasRevertTracker,
 };
 use crate::execution::stack_trace::{
+    Cairo1RevertHeader,
     extract_trailing_cairo1_revert_trace,
     gen_tx_execution_error_trace,
-    Cairo1RevertHeader,
 };
 use crate::fee::fee_checks::{FeeCheckReportFields, PostExecutionReport};
 use crate::fee::fee_utils::{
+    GasVectorToL1GasForFee,
     get_fee_by_gas_vector,
     get_sequencer_balance_keys,
     verify_can_pay_committed_bounds,
-    GasVectorToL1GasForFee,
 };
 use crate::fee::gas_usage::estimate_minimal_gas_vector;
 use crate::fee::receipt::TransactionReceipt;
@@ -69,10 +69,10 @@ use crate::transaction::objects::{
     TransactionPreValidationResult,
 };
 use crate::transaction::transactions::{
-    enforce_fee,
     Executable,
     ExecutableTransaction,
     ValidatableTransaction,
+    enforce_fee,
 };
 
 #[cfg(test)]
@@ -333,7 +333,7 @@ impl AccountTransaction {
         let chain_info = &block_context.chain_info;
         // TODO(Meshi): Cache this computation as part of the chain context.
         let virtual_os_config_hash = OsChainInfo::from(chain_info)
-            .compute_virtual_os_config_hash()
+            .compute_os_config_hash(None)
             .expect("Failed to compute OS config hash");
         let proof_config_hash = snos_proof_facts.config_hash;
         if virtual_os_config_hash != proof_config_hash {
@@ -581,8 +581,12 @@ impl AccountTransaction {
             SierraGasRevertTracker::new(GasAmount(remaining_gas_for_fee_transfer)),
         );
 
-        Ok(fee_transfer_call
-            .execute(state, &mut context, &mut remaining_gas_for_fee_transfer)
+        let transfer_result =
+            fee_transfer_call.execute(state, &mut context, &mut remaining_gas_for_fee_transfer);
+        if let Some(error) = context.committed_data_failure.take() {
+            return Err(error.into());
+        }
+        Ok(transfer_result
             .map_err(|error| Box::new(TransactionFeeError::ExecuteFeeTransferError(error)))?)
     }
 
@@ -661,7 +665,11 @@ impl AccountTransaction {
                         .limit_usage(tx_context.sierra_gas_limit(&ExecutionMode::Validate)),
                 )),
             );
-            execute_call_info = self.run_execute(state, &mut execution_context, remaining_gas)?;
+            let execution_result = self.run_execute(state, &mut execution_context, remaining_gas);
+            if let Some(error) = execution_context.committed_data_failure.take() {
+                return Err(error.into());
+            }
+            execute_call_info = execution_result?;
             validate_call_info = self.validate_tx(state, tx_context.clone(), remaining_gas)?;
         } else {
             validate_call_info = self.validate_tx(state, tx_context.clone(), remaining_gas)?;
@@ -675,7 +683,11 @@ impl AccountTransaction {
                     remaining_gas.limit_usage(tx_context.sierra_gas_limit(&ExecutionMode::Execute)),
                 )),
             );
-            execute_call_info = self.run_execute(state, &mut execution_context, remaining_gas)?;
+            let execution_result = self.run_execute(state, &mut execution_context, remaining_gas);
+            if let Some(error) = execution_context.committed_data_failure.take() {
+                return Err(error.into());
+            }
+            execute_call_info = execution_result?;
         }
 
         let tx_receipt = TransactionReceipt::from_account_tx(
@@ -740,6 +752,11 @@ impl AccountTransaction {
 
         let execution_result =
             self.run_execute(&mut execution_state, &mut execution_context, remaining_gas);
+
+        if let Some(error) = execution_context.committed_data_failure.take() {
+            execution_state.abort();
+            return Err(error.into());
+        }
 
         // Pre-compute cost in case of revert.
         let execution_steps_consumed =
@@ -910,6 +927,8 @@ impl<U: UpdatableState> ExecutableTransaction<U> for AccountTransaction {
         // Nonce and fee check should be done before running user code.
         self.perform_pre_validation_stage(state, &tx_context).map_err(Box::new)?;
 
+        // Fully reverted execution is skipped by SNOS and cannot warm subsequent reads.
+        let read_checkpoint = block_context.committed_data_read_set.fork();
         // Run validation and execution.
         let initial_gas = tx_context.initial_sierra_gas();
         let ValidateExecuteCallInfo {
@@ -924,6 +943,9 @@ impl<U: UpdatableState> ExecutableTransaction<U> for AccountTransaction {
                     gas: total_gas,
                 },
         } = self.run_or_revert(state, &mut GasCounter::new(initial_gas), tx_context.clone())?;
+        if revert_error.is_some() {
+            block_context.committed_data_read_set.replace_with(&read_checkpoint);
+        }
         let fee_transfer_call_info = Self::handle_fee(
             state,
             tx_context,
@@ -1025,14 +1047,19 @@ impl ValidatableTransaction for AccountTransaction {
         };
 
         // Note that we allow a revert here and we handle it bellow to get a better error message.
-        let validate_call_info = validate_call
-            .execute(state, &mut context, remaining_validation_gas)
-            .map_err(|error| TransactionExecutionError::ValidateTransactionError {
+        let validation_result =
+            validate_call.execute(state, &mut context, remaining_validation_gas);
+        if let Some(error) = context.committed_data_failure.take() {
+            return Err(error.into());
+        }
+        let validate_call_info = validation_result.map_err(|error| {
+            TransactionExecutionError::ValidateTransactionError {
                 error: Box::new(error),
                 class_hash,
                 storage_address,
                 selector: validate_selector,
-            })?;
+            }
+        })?;
 
         // Validate return data.
         let compiled_class = state.get_compiled_class(class_hash)?;

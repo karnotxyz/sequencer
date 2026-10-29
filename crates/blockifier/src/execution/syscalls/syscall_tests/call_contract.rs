@@ -572,3 +572,397 @@ fn test_nested_call_storage_revert(runnable_version: RunnableCairo1) {
         "All L1 messages should be reverted across the call hierarchy; got {messages:?}."
     );
 }
+
+#[cfg_attr(feature = "cairo_native", test_case(RunnableCairo1::Native; "native"))]
+#[test_case(RunnableCairo1::Casm; "vm")]
+fn committed_data_reads_require_permission_across_execution_engines(runnable: RunnableCairo1) {
+    use starknet_types_core::felt::Felt;
+
+    use crate::execution::syscalls::committed_data::{CommittedDataSet, CommittedDataWitnesses};
+    use crate::state::state_api::State;
+
+    let contract = FeatureContract::TestContract(CairoVersion::Cairo1(runnable));
+    let tree =
+        CommittedDataSet::new(vec![(Felt::ZERO, Felt::ZERO), (Felt::MAX, Felt::MAX)]).unwrap();
+    for use_committed_data in [false, true] {
+        for instance in 0..2 {
+            let address = contract.get_instance_address(instance);
+            let mut state = test_state(&ChainInfo::create_for_testing(), BALANCE, &[(contract, 2)]);
+            state.set_storage_at(address, StorageKey::from(45_u32), tree.root()).unwrap();
+            let mut context = BlockContext::create_for_testing();
+            context.use_committed_data = use_committed_data;
+            context.committed_data_witnesses = Arc::new(
+                CommittedDataWitnesses::new(vec![tree.witness(Felt::MAX).unwrap()]).unwrap(),
+            );
+            let call = CallEntryPoint {
+                entry_point_selector: selector_from_name("test_committed_data_read"),
+                calldata: calldata_macro![Felt::MAX, Felt::MAX],
+                storage_address: address,
+                code_address: Some(address),
+                ..trivial_external_entry_point_new(contract)
+            };
+            let result = call.execute_directly_given_block_context(&mut state, context);
+            if use_committed_data {
+                let info = result.unwrap();
+                assert!(!info.execution.failed);
+                info.check_native_execution(runnable.is_cairo_native());
+                assert!(
+                    info.execution.gas_consumed
+                        >= crate::execution::syscalls::committed_data::read_gas(1)
+                );
+                for (builtin, minimum) in
+                    &crate::execution::syscalls::committed_data::read_os_resources(1)
+                        .builtin_instance_counter
+                {
+                    assert!(
+                        info.builtin_counters.get(&(*builtin).into()).copied().unwrap_or_default()
+                            >= *minimum
+                    );
+                }
+            } else {
+                assert!(result.is_err() || result.unwrap().execution.failed);
+            }
+        }
+    }
+}
+
+#[cfg_attr(feature = "cairo_native", test_case(RunnableCairo1::Native; "native"))]
+#[test_case(RunnableCairo1::Casm; "vm")]
+fn committed_data_disabled_never_dispatches_an_ordinary_contract(runnable: RunnableCairo1) {
+    use starknet_api::core::ContractAddress;
+    use starknet_types_core::felt::Felt;
+
+    use crate::execution::syscalls::committed_data::COMMITTED_DATA_ADDRESS;
+    use crate::state::state_api::State;
+
+    let contract = FeatureContract::TestContract(CairoVersion::Cairo1(runnable));
+    let mut state = test_state(&ChainInfo::create_for_testing(), BALANCE, &[(contract, 1)]);
+    let reserved = ContractAddress::try_from(COMMITTED_DATA_ADDRESS).unwrap();
+    // Simulate pre-existing code: disabled dispatch must not execute it.
+    state.set_class_hash_at(reserved, contract.get_class_hash()).unwrap();
+    let call = CallEntryPoint {
+        entry_point_selector: selector_from_name("test_call_contract"),
+        calldata: calldata_macro![
+            COMMITTED_DATA_ADDRESS,
+            selector_from_name("test_storage_read").0,
+            Felt::ONE,
+            Felt::ZERO
+        ],
+        ..trivial_external_entry_point_new(contract)
+    };
+    let result =
+        call.execute_directly_given_block_context(&mut state, BlockContext::create_for_testing());
+    assert!(result.is_err() || result.unwrap().execution.failed);
+}
+
+#[cfg_attr(feature = "cairo_native", test_case(RunnableCairo1::Native; "native"))]
+#[test_case(RunnableCairo1::Casm; "vm")]
+fn committed_data_disabled_or_unavailable_rejects_transaction_without_state_changes(
+    runnable: RunnableCairo1,
+) {
+    use starknet_api::invoke_tx_args;
+    use starknet_api::transaction::TransactionVersion;
+    use starknet_types_core::felt::Felt;
+
+    use crate::execution::syscalls::committed_data::{
+        CommittedDataError,
+        CommittedDataProvider,
+        CommittedDataSet,
+        CommittedDataWitnesses,
+    };
+    use crate::state::state_api::State;
+    use crate::transaction::errors::TransactionExecutionError;
+    use crate::transaction::test_utils::{
+        create_test_init_data,
+        default_all_resource_bounds,
+        invoke_tx_with_default_flags,
+    };
+    use crate::transaction::transactions::ExecutableTransaction;
+
+    #[derive(Debug)]
+    struct FailingProvider;
+    impl CommittedDataProvider for FailingProvider {
+        fn batch(
+            &self,
+            _: Felt,
+            _: &[Felt],
+        ) -> Result<
+            crate::execution::syscalls::committed_data::CommittedDataBatchProof,
+            CommittedDataError,
+        > {
+            Err(CommittedDataError::Provider("test provider unavailable".into()))
+        }
+        fn value(&self, _: Felt, _: Felt) -> Result<Option<(Felt, usize)>, CommittedDataError> {
+            Err(CommittedDataError::Provider("test provider unavailable".into()))
+        }
+    }
+
+    for (version, (enabled, provider_failure)) in [
+        TransactionVersion::ZERO,
+        TransactionVersion::THREE,
+    ]
+    .into_iter()
+    .cartesian_product([(false, false), (true, false), (true, true)])
+    {
+        let mut block_context = BlockContext::create_for_testing();
+        block_context.use_committed_data = enabled;
+        if provider_failure {
+            block_context.committed_data_witnesses =
+                Arc::new(CommittedDataWitnesses::from_provider(Arc::new(FailingProvider)));
+        }
+        let data = create_test_init_data(&block_context.chain_info, CairoVersion::Cairo1(runnable));
+        let mut state = data.state;
+        let tree = CommittedDataSet::new(vec![(Felt::ZERO, Felt::MAX)]).unwrap();
+        if !enabled {
+            // Even a valid witness must not permit a disabled read.
+            block_context.committed_data_witnesses = Arc::new(
+                CommittedDataWitnesses::new(vec![tree.witness(Felt::ZERO).unwrap()]).unwrap(),
+            );
+        }
+        state.set_storage_at(data.contract_address, StorageKey::from(45_u32), tree.root()).unwrap();
+        let before = state.to_state_diff().unwrap();
+        let nonce_before = state.get_nonce_at(data.account_address).unwrap();
+        let tx = invoke_tx_with_default_flags(invoke_tx_args! {
+            version,
+            max_fee: BALANCE,
+            resource_bounds: default_all_resource_bounds(),
+            sender_address: data.account_address,
+            calldata: create_calldata(data.contract_address, "test_committed_data_read", &[Felt::ZERO, Felt::MAX]),
+        });
+        let result = tx.execute(&mut state, &block_context);
+        let Err(TransactionExecutionError::CommittedDataAvailability(error)) = result else {
+            panic!("expected committed-data rejection, got {result:?}");
+        };
+        assert!(matches!(
+            (enabled, provider_failure, error),
+            (false, _, CommittedDataError::Disabled)
+                | (true, false, CommittedDataError::Unavailable)
+                | (true, true, CommittedDataError::Provider(_))
+        ));
+        assert_eq!(state.get_nonce_at(data.account_address).unwrap(), nonce_before);
+        assert_eq!(state.to_state_diff().unwrap(), before);
+    }
+}
+
+#[cfg_attr(feature = "cairo_native", test_case(RunnableCairo1::Native; "native"))]
+#[test_case(RunnableCairo1::Casm; "vm")]
+fn committed_data_batch_dispatch_returns_values_in_order(runnable: RunnableCairo1) {
+    use starknet_types_core::felt::Felt;
+
+    use crate::execution::syscalls::committed_data::{
+        batch_gas,
+        batch_os_resources,
+        CommittedDataSet,
+        CommittedDataWitnesses,
+        COMMITTED_DATA_ADDRESS,
+    };
+    let contract = FeatureContract::TestContract(CairoVersion::Cairo1(runnable));
+    let tree =
+        CommittedDataSet::new(vec![(Felt::ZERO, Felt::MAX), (Felt::MAX, Felt::ZERO)]).unwrap();
+    let mut state = test_state(&ChainInfo::create_for_testing(), BALANCE, &[(contract, 1)]);
+    let mut context = BlockContext::create_for_testing();
+    context.use_committed_data = true;
+    context.committed_data_witnesses = Arc::new(
+        CommittedDataWitnesses::new(vec![
+            tree.witness(Felt::ZERO).unwrap(),
+            tree.witness(Felt::MAX).unwrap(),
+        ])
+        .unwrap(),
+    );
+    let call = CallEntryPoint {
+        entry_point_selector: selector_from_name("test_call_contract"),
+        calldata: calldata_macro![
+            COMMITTED_DATA_ADDRESS,
+            selector_from_name("get_values").0,
+            Felt::from(5),
+            tree.root(),
+            Felt::from(3),
+            Felt::MAX,
+            Felt::ZERO,
+            Felt::MAX
+        ],
+        ..trivial_external_entry_point_new(contract)
+    };
+    let info = call.execute_directly_given_block_context(&mut state, context).unwrap();
+    assert!(!info.execution.failed);
+    info.check_native_execution(runnable.is_cairo_native());
+    assert!(info.execution.gas_consumed >= batch_gas(3, 2, 1));
+    assert_eq!(info.unpaid_committed_data_resources, Default::default());
+    for (builtin, minimum) in batch_os_resources(3, 2, 1).builtin_instance_counter {
+        assert!(info.builtin_counters.get(&builtin.into()).copied().unwrap_or_default() >= minimum);
+    }
+    // The compiled fixture forwards the special call's length-prefixed return data.
+    assert_eq!(info.execution.retdata.0, vec![Felt::from(3), Felt::ZERO, Felt::MAX, Felt::ZERO]);
+}
+
+#[cfg_attr(feature = "cairo_native", test_case(RunnableCairo1::Native; "native"))]
+#[test_case(RunnableCairo1::Casm; "vm")]
+fn committed_data_out_of_gas_cannot_be_caught(runnable: RunnableCairo1) {
+    use starknet_types_core::felt::Felt;
+
+    use crate::execution::syscalls::committed_data::{
+        CommittedDataSet,
+        CommittedDataWitnesses,
+        COMMITTED_DATA_TREE_HEIGHT,
+    };
+    let contract = FeatureContract::TestContract(CairoVersion::Cairo1(runnable));
+    let mut entries = vec![(Felt::ZERO, Felt::ZERO)];
+    for bit in 0..COMMITTED_DATA_TREE_HEIGHT {
+        let mut bytes = [0_u8; 32];
+        bytes[31 - bit / 8] = 1 << (bit % 8);
+        entries.push((Felt::from_bytes_be(&bytes), Felt::from(bit)));
+    }
+    let tree = CommittedDataSet::new(entries).unwrap();
+    let mut state = test_state(&ChainInfo::create_for_testing(), BALANCE, &[(contract, 1)]);
+    let mut context = BlockContext::create_for_testing();
+    context.use_committed_data = true;
+    context.committed_data_witnesses =
+        Arc::new(CommittedDataWitnesses::new(vec![tree.witness(Felt::ZERO).unwrap()]).unwrap());
+    let call = CallEntryPoint {
+        entry_point_selector: selector_from_name("test_committed_data_catch"),
+        calldata: calldata_macro![tree.root(), Felt::ONE, Felt::ZERO, Felt::ONE, Felt::from(3)],
+        initial_gas: 4_000_000,
+        ..trivial_external_entry_point_new(contract)
+    };
+    let error = call.execute_directly_given_block_context(&mut state, context).unwrap_err();
+    assert!(format!("{error:?}").contains("Insufficient gas for committed-data verification"));
+}
+
+/// A caller cannot turn unpaid verification into a successful transaction, whether the read
+/// is single, batched, or nested in an error-catching helper. Rejection rolls back nonce/fees.
+#[cfg_attr(feature = "cairo_native", test_case(RunnableCairo1::Native, 0; "native_single"))]
+#[cfg_attr(feature = "cairo_native", test_case(RunnableCairo1::Native, 1; "native_batch"))]
+#[cfg_attr(feature = "cairo_native", test_case(RunnableCairo1::Native, 2; "native_caught"))]
+#[test_case(RunnableCairo1::Casm, 0; "vm_single")]
+#[test_case(RunnableCairo1::Casm, 1; "vm_batch")]
+#[test_case(RunnableCairo1::Casm, 2; "vm_caught")]
+fn committed_data_insufficient_gas_rejects_transaction(runnable: RunnableCairo1, mode: u8) {
+    use starknet_api::execution_resources::GasAmount;
+    use starknet_api::invoke_tx_args;
+    use starknet_api::transaction::fields::ValidResourceBounds;
+    use starknet_types_core::felt::Felt;
+
+    use crate::execution::syscalls::committed_data::{
+        CommittedDataSet,
+        CommittedDataWitnesses,
+        COMMITTED_DATA_ADDRESS,
+        COMMITTED_DATA_TREE_HEIGHT,
+    };
+    use crate::state::state_api::State;
+    use crate::transaction::errors::TransactionExecutionError;
+    use crate::transaction::test_utils::{
+        create_test_init_data,
+        default_all_resource_bounds,
+        invoke_tx_with_default_flags,
+    };
+    use crate::transaction::transactions::ExecutableTransaction;
+
+    let mut context = BlockContext::create_for_testing();
+    context.use_committed_data = true;
+    let mut entries = vec![(Felt::ZERO, Felt::ONE)];
+    for bit in 0..COMMITTED_DATA_TREE_HEIGHT {
+        let mut bytes = [0u8; 32];
+        bytes[31 - bit / 8] = 1 << (bit % 8);
+        entries.push((Felt::from_bytes_be(&bytes), Felt::from(bit)));
+    }
+    let tree = CommittedDataSet::new(entries).unwrap();
+    context.committed_data_witnesses =
+        Arc::new(CommittedDataWitnesses::new(vec![tree.witness(Felt::ZERO).unwrap()]).unwrap());
+    let data = create_test_init_data(&context.chain_info, CairoVersion::Cairo1(runnable));
+    let mut state = data.state;
+    let (address, selector, args) = match mode {
+        0 => {
+            (COMMITTED_DATA_ADDRESS.try_into().unwrap(), "get_value", vec![tree.root(), Felt::ZERO])
+        }
+        1 => (
+            COMMITTED_DATA_ADDRESS.try_into().unwrap(),
+            "get_values",
+            vec![tree.root(), Felt::ONE, Felt::ZERO],
+        ),
+        _ => (
+            data.contract_address,
+            "test_committed_data_catch",
+            vec![tree.root(), Felt::ONE, Felt::ZERO, Felt::ONE, Felt::from(3)],
+        ),
+    };
+    let mut bounds = default_all_resource_bounds();
+    let ValidResourceBounds::AllResources(ref mut all) = bounds else { unreachable!() };
+    all.l2_gas.max_amount = GasAmount(4_000_000);
+    let transaction = invoke_tx_with_default_flags(invoke_tx_args! {
+        sender_address: data.account_address,
+        resource_bounds: bounds,
+        calldata: create_calldata(address, selector, &args),
+    });
+    let before = state.to_state_diff().unwrap();
+    let nonce = state.get_nonce_at(data.account_address).unwrap();
+    let result = transaction.execute(&mut state, &context);
+    assert!(
+        matches!(result, Err(TransactionExecutionError::CommittedDataInsufficientGas { required, remaining }) if required > remaining),
+        "{result:?}"
+    );
+    assert_eq!(state.get_nonce_at(data.account_address).unwrap(), nonce);
+    assert_eq!(state.to_state_diff().unwrap(), before);
+}
+
+/// L1 execution must consume the same sticky marker rather than commit an ordinary revert.
+#[cfg_attr(feature = "cairo_native", test_case(RunnableCairo1::Native, true; "native_unavailable"))]
+#[cfg_attr(feature = "cairo_native", test_case(RunnableCairo1::Native, false; "native_budget"))]
+#[test_case(RunnableCairo1::Casm, true; "vm_unavailable")]
+#[test_case(RunnableCairo1::Casm, false; "vm_budget")]
+fn committed_data_l1_failures_reject_without_state_changes(
+    runnable: RunnableCairo1,
+    missing: bool,
+) {
+    use starknet_api::execution_resources::GasAmount;
+    use starknet_api::test_utils::l1_handler::{executable_l1_handler_tx, L1HandlerTxArgs};
+    use starknet_api::transaction::fields::Fee;
+    use starknet_types_core::felt::Felt;
+
+    use crate::execution::syscalls::committed_data::{
+        CommittedDataSet,
+        CommittedDataWitnesses,
+        COMMITTED_DATA_TREE_HEIGHT,
+    };
+    use crate::state::state_api::State;
+    use crate::transaction::errors::TransactionExecutionError;
+    use crate::transaction::transactions::ExecutableTransaction;
+    let mut context = BlockContext::create_for_testing();
+    context.use_committed_data = true;
+    Arc::make_mut(&mut context.versioned_constants.os_constants)
+        .l1_handler_max_amount_bounds
+        .l2_gas = GasAmount(4_000_000);
+    let contract = FeatureContract::TestContract(CairoVersion::Cairo1(runnable));
+    let mut state = test_state(&context.chain_info, BALANCE, &[(contract, 1)]);
+    let mut entries = vec![(Felt::ZERO, Felt::ONE)];
+    for bit in 0..COMMITTED_DATA_TREE_HEIGHT {
+        let mut bytes = [0u8; 32];
+        bytes[31 - bit / 8] = 1 << (bit % 8);
+        entries.push((Felt::from_bytes_be(&bytes), Felt::from(bit)));
+    }
+    let tree = CommittedDataSet::new(entries).unwrap();
+    if !missing {
+        context.committed_data_witnesses =
+            Arc::new(CommittedDataWitnesses::new(vec![tree.witness(Felt::ZERO).unwrap()]).unwrap());
+    }
+    let transaction = executable_l1_handler_tx(L1HandlerTxArgs {
+        contract_address: contract.get_instance_address(0),
+        entry_point_selector: selector_from_name("l1_committed_data_catch"),
+        calldata: calldata_macro![Felt::ONE, tree.root(), Felt::ONE, Felt::ZERO],
+        paid_fee_on_l1: Fee(1),
+        ..Default::default()
+    });
+    let before = state.to_state_diff().unwrap();
+    let result = transaction.execute(&mut state, &context);
+    if missing {
+        assert!(
+            matches!(result, Err(TransactionExecutionError::CommittedDataAvailability(_))),
+            "{result:?}"
+        );
+    } else {
+        assert!(
+            matches!(result, Err(TransactionExecutionError::CommittedDataInsufficientGas { required, remaining }) if required > remaining),
+            "{result:?}"
+        );
+    }
+    assert_eq!(state.to_state_diff().unwrap(), before);
+}

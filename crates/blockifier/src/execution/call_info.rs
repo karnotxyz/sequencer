@@ -455,6 +455,10 @@ pub struct CallInfo {
     pub builtin_counters: CairoPrimitiveCounterMap,
     // Tracks how many times each syscall was called during execution (excluding inner calls).
     pub syscalls_usage: SyscallUsageMap,
+    /// Unpaid committed-data verification in this call (excluding inner calls).
+    /// Reserved by block admission only; does not alter receipt fees or Cairo gas semantics.
+    #[serde(default)]
+    pub unpaid_committed_data_resources: ExecutionResources,
 }
 
 impl CallInfo {

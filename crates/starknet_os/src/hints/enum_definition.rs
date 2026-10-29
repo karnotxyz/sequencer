@@ -37,6 +37,15 @@ use crate::hints::hint_implementation::cairo1_revert::implementation::{
     read_storage_key_for_revert,
     write_storage_key_for_revert,
 };
+use crate::hints::hint_implementation::committed_data::{
+    end_committed_data_finalization,
+    load_committed_data_batch,
+    load_committed_data_deferred,
+    load_committed_data_root_union,
+    load_committed_data_witness,
+    load_use_committed_data,
+    start_committed_data_finalization,
+};
 use crate::hints::hint_implementation::compiled_class::implementation::{
     assert_end_of_bytecode_segments,
     assign_bytecode_segments,
@@ -225,7 +234,7 @@ use crate::hints::hint_implementation::syscalls::{
     storage_read,
     storage_write,
 };
-use crate::hints::pythonic_hint_strings::builtin_selection::{SELECTED_BUILTINS, SELECT_BUILTIN};
+use crate::hints::pythonic_hint_strings::builtin_selection::{SELECT_BUILTIN, SELECTED_BUILTINS};
 use crate::hints::pythonic_hint_strings::deprecated_syscalls::{
     CALL_CONTRACT,
     DELEGATE_CALL,
@@ -468,6 +477,13 @@ define_hint_enum!(
     SnosHintProcessor<'_, S>,
     S,
     StateReader,
+    (LoadCommittedDataWitness, load_committed_data_witness),
+    (LoadCommittedDataDeferred, load_committed_data_deferred),
+    (LoadCommittedDataRootUnion, load_committed_data_root_union),
+    (StartCommittedDataFinalization, start_committed_data_finalization),
+    (EndCommittedDataFinalization, end_committed_data_finalization),
+    (LoadCommittedDataBatch, load_committed_data_batch),
+    (LoadUseCommittedData, load_use_committed_data),
     (LoadClass, load_class),
     (RelocateSha256Segment, relocate_sha256_segment),
     (EnterScopeWithBytecodeSegmentStructure, enter_scope_with_bytecode_segment_structure),

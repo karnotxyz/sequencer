@@ -395,6 +395,8 @@ pub struct StarknetOsRunnerOutput {
     pub da_segment: Option<Vec<Felt>>,
     pub metrics: OsMetrics,
     #[cfg(any(test, feature = "testing"))]
+    pub committed_data_finalizations: Vec<cairo_vm::vm::runners::cairo_runner::ExecutionResources>,
+    #[cfg(any(test, feature = "testing"))]
     pub txs_trace: Vec<crate::hint_processor::os_logger::OsTransactionTrace>,
     #[cfg(any(test, feature = "testing"))]
     pub unused_hints: std::collections::HashSet<crate::hints::enum_definition::AllHints>,

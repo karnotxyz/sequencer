@@ -32,12 +32,12 @@ use crate::execution::entry_point::{
 };
 use crate::execution::errors::{EntryPointExecutionError, PostExecutionError, PreExecutionError};
 use crate::execution::execution_utils::{
-    read_execution_retdata,
-    write_felt,
-    write_maybe_relocatable,
     Args,
     ReadOnlySegments,
     SEGMENT_ARENA_BUILTIN_SIZE,
+    read_execution_retdata,
+    write_felt,
+    write_maybe_relocatable,
 };
 use crate::execution::syscalls::hint_processor::SyscallHintProcessor;
 use crate::state::state_api::State;
@@ -442,6 +442,7 @@ pub fn extract_extended_vm_resources(
     // Take into account the syscall resources of the current call.
     vm_resources_without_inner_calls += &versioned_constants
         .get_additional_os_syscall_resources(&syscall_handler.base.syscalls_usage);
+    vm_resources_without_inner_calls += &syscall_handler.base.committed_data_resources;
     let extended = ExtendedExecutionResources {
         vm_resources: vm_resources_without_inner_calls,
         opcode_instance_counter,
@@ -522,6 +523,7 @@ pub fn finalize_execution(
         storage_access_tracker: syscall_handler_base.storage_access_tracker,
         builtin_counters: extended_resources_without_inner_calls.prover_cairo_primitives(),
         syscalls_usage: syscall_handler_base.syscalls_usage,
+        unpaid_committed_data_resources: syscall_handler_base.unpaid_committed_data_resources,
     })
 }
 

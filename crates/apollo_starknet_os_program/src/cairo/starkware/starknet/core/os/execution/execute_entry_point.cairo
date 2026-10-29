@@ -290,6 +290,7 @@ func execute_entry_point{
         // The dummy is initialized with
         // OsCarriedOutputs(messages_to_l1="empty segment", messages_to_l2=0).
         %{ GenerateDummyOsOutputSegment %}
+        assert outputs.committed_data_cache = orig_outputs.committed_data_cache;
         // Create a new revert log for the reverted entry point. This will be used to revert the
         // entry point changes after calling `call_execute_syscalls`.
         let revert_log = init_revert_log();
@@ -313,7 +314,11 @@ func execute_entry_point{
         );
         // Restore the original revert log and outputs.
         let revert_log = orig_revert_log;
-        let outputs = orig_outputs;
+        tempvar outputs = new OsCarriedOutputs(
+            messages_to_l1=orig_outputs.messages_to_l1,
+            messages_to_l2=orig_outputs.messages_to_l2,
+            committed_data_cache=outputs.committed_data_cache,
+        );
         return (
             is_reverted=is_reverted, retdata_size=retdata_end - retdata_start, retdata=retdata_start
         );

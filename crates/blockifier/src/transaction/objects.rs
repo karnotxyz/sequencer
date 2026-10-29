@@ -267,6 +267,24 @@ impl TransactionExecutionInfo {
         CallInfo::summarize_many(self.non_optional_call_infos(), versioned_constants)
     }
 
+    /// Adds unpaid proof work to admission without changing the transaction receipt.
+    /// Builtins are already in `summarize_builtins`; including their Sierra weight here
+    /// prevents the proving conversion from subtracting them from unrelated paid steps.
+    pub fn bouncer_resources(
+        &self,
+    ) -> std::borrow::Cow<'_, crate::fee::resources::TransactionResources> {
+        let mut resources = std::borrow::Cow::Borrowed(&self.receipt.resources);
+        for outer in self.non_optional_call_infos_without_fee_transfer() {
+            for call in outer.iter() {
+                if call.unpaid_committed_data_resources != ExecutionResources::default() {
+                    resources.to_mut().computation.tx_extended_vm_resources +=
+                        &call.unpaid_committed_data_resources;
+                }
+            }
+        }
+        resources
+    }
+
     pub fn summarize_builtins(&self) -> CairoPrimitiveCounterMap {
         let mut builtin_counters = CairoPrimitiveCounterMap::new();
         // Remove fee transfer builtins to avoid double-counting in `get_tx_weights`
