@@ -5,11 +5,11 @@ use sha3::{Digest, Keccak256};
 use starknet_types_core::felt::{Felt, FromStrError};
 use starknet_types_core::hash::{Poseidon, StarkHash as StarkHashTrait};
 
-use crate::core::{ContractAddress, EntryPointSelector, GLOBAL_STATE_VERSION, GlobalRoot, Nonce};
+use crate::core::{ContractAddress, EntryPointSelector, GlobalRoot, Nonce, GLOBAL_STATE_VERSION};
 use crate::hash_cache;
 use crate::serde_utils::bytes_from_hex_str;
-use crate::transaction::L1HandlerTransaction;
 use crate::transaction::fields::Calldata;
+use crate::transaction::L1HandlerTransaction;
 
 pub type StarkHash = Felt;
 
