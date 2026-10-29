@@ -928,6 +928,7 @@ impl<S: FlowTestState> TestBuilder<S> {
             current_block_hash = new_block_hash;
 
             let os_block_input = OsBlockInput {
+                committed_data_witnesses: Vec::new(),
                 contract_state_commitment_info: commitment_infos.contracts_trie_commitment_info,
                 contract_class_commitment_info: commitment_infos.classes_trie_commitment_info,
                 address_to_storage_commitment_info: commitment_infos.storage_tries_commitment_infos,

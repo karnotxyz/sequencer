@@ -182,6 +182,14 @@ impl<S: StateReader> TransactionExecutor<S> {
             }
             Err(error) => {
                 transactional_state.abort();
+                // A witness allowance exhausted by earlier transactions closes this block.
+                // Retry once on an empty block; a transaction exceeding the allowance there
+                // remains a permanent transaction error, so it cannot loop through empty blocks.
+                if matches!(&error, crate::transaction::errors::TransactionExecutionError::CommittedDataAvailability(
+                    crate::execution::syscalls::committed_data::CommittedDataError::TooManyWitnesses
+                )) && !self.block_context.committed_data_read_set.is_empty() {
+                    return Err(TransactionExecutorError::BlockFull);
+                }
                 Err(TransactionExecutorError::TransactionExecutionError(error))
             }
         }

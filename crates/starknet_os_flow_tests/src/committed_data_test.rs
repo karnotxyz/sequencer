@@ -1,9 +1,9 @@
 use std::sync::Arc;
 
 use blockifier::execution::syscalls::committed_data::{
-    read_os_resources,
     CommittedDataWitness,
     CommittedDataWitnesses,
+    read_os_resources,
 };
 use blockifier::execution::syscalls::vm_syscall_utils::SyscallSelector;
 use blockifier::test_utils::dict_state_reader::DictStateReader;
@@ -22,10 +22,10 @@ fn witness(value: Felt, index: u32, height: usize) -> CommittedDataWitness {
 
 fn witness_for_key(value: Felt, key: Felt, height: usize) -> CommittedDataWitness {
     use blockifier::execution::syscalls::committed_data::{
+        CommittedDataSibling,
         branch,
         key_bit,
         leaf,
-        CommittedDataSibling,
     };
     let siblings: Vec<_> = (0..height)
         .map(|i| CommittedDataSibling { bit: i as u8, hash: Felt::from(i + 100) })
@@ -438,10 +438,10 @@ async fn committed_data_virtual_os_uses_standard_config_hash() {
 #[tokio::test]
 async fn committed_data_batches_match_os_and_bound_resources() {
     use blockifier::execution::syscalls::committed_data::{
-        leaf,
+        COMMITTED_DATA_ADDRESS,
         CommittedDataBatchProof,
         CommittedDataSet,
-        COMMITTED_DATA_ADDRESS,
+        leaf,
     };
     use starknet_api::abi::abi_utils::selector_from_name;
     let contract = FeatureContract::TestContract(CairoVersion::Cairo1(RunnableCairo1::Casm));
@@ -531,8 +531,8 @@ async fn committed_data_batches_match_os_and_bound_resources() {
     collect(&trace, &mut calls);
     assert_eq!(calls.len(), cases.len());
     use blockifier::execution::syscalls::committed_data::{
-        read_values_shared,
         CommittedDataReadSet,
+        read_values_shared,
     };
     use cairo_vm::vm::runners::cairo_runner::ExecutionResources;
     let mut actual = ExecutionResources::default();
@@ -579,8 +579,13 @@ async fn committed_data_batches_match_os_and_bound_resources() {
 
 /// A canonical revert is omitted by SNOS. Its discarded read set must not discount the next
 /// transaction; successful calls may share within a block, and the next block starts cold.
+#[rstest::rstest]
+#[case::legacy_input(false)]
+#[case::per_block_input(true)]
 #[tokio::test]
-async fn committed_data_shared_reads_follow_reverts_and_block_boundaries() {
+async fn committed_data_shared_reads_follow_reverts_and_block_boundaries(
+    #[case] per_block_input: bool,
+) {
     use blockifier::execution::syscalls::committed_data::CommittedDataSet;
     let contract = FeatureContract::TestContract(CairoVersion::Cairo1(RunnableCairo1::Casm));
     let (mut builder, [reader]) =
@@ -614,7 +619,15 @@ async fn committed_data_shared_reads_follow_reverts_and_block_boundaries() {
             builder.add_invoke_tx(tx, must_revert.then(String::new), None);
         }
     }
-    let output = builder.build().await.run();
+    let mut runner = builder.build().await;
+    if per_block_input {
+        let witnesses =
+            std::mem::take(&mut runner.os_hints.os_hints_config.committed_data_witnesses);
+        for block in &mut runner.os_hints.os_input.os_block_inputs {
+            block.committed_data_witnesses = witnesses.clone();
+        }
+    }
+    let output = runner.run();
     output.perform_default_validations();
     output.runner_output.cairo_pie.run_validity_checks().unwrap();
     assert_eq!(output.runner_output.committed_data_finalizations.len(), 2);

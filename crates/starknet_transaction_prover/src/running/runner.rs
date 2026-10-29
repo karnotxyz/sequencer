@@ -61,6 +61,7 @@ pub(crate) struct VirtualOsBlockInput {
 impl From<VirtualOsBlockInput> for OsHints {
     fn from(virtual_os_block_input: VirtualOsBlockInput) -> Self {
         let os_block_input = OsBlockInput {
+            committed_data_witnesses: Vec::new(),
             block_hash_commitments: virtual_os_block_input.base_block_header_commitments,
             contract_state_commitment_info: virtual_os_block_input.contract_state_commitment_info,
             address_to_storage_commitment_info: virtual_os_block_input

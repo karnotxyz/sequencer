@@ -26,16 +26,16 @@ pub const COMMITTED_DATA_ADDRESS: Felt =
     Felt::from_hex_unchecked("0x6c5f4559c7041984537bc078c71443fdc58b2e1bab302b341ec12b3d2cec44");
 mod sharing;
 pub use sharing::{
+    CommittedDataReadSet,
     read_values_shared,
     resources_gas,
     shared_request_resources,
-    CommittedDataReadSet,
 };
 mod batch;
 pub use batch::CommittedDataBatchProof;
 mod mpt;
 pub use mpt::*;
-/// Bound on distinct witnesses supplied to one replay request.
+/// Bound on distinct witnesses required by one block, shared by both read ABIs.
 pub const MAX_COMMITTED_DATA_WITNESSES: usize = 65_536;
 // Conservative bounds include full-key bit extraction and two Poseidon permutations per node.
 // The OS flow test profiles short, long and high-bit paths against these same bounds.

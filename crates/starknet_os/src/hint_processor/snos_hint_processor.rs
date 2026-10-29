@@ -122,7 +122,7 @@ pub struct SnosHintProcessor<'a, S: StateReader> {
     pub(crate) program: &'a Program,
     pub(crate) execution_helpers_manager: ExecutionHelpersManager<'a, S>,
     pub(crate) os_hints_config: OsHintsConfig,
-    committed_data_index: HashMap<(Felt, Felt), usize>,
+    committed_data_index: HashMap<(Option<u64>, Felt, Felt), usize>,
     pub(crate) committed_data_billing:
         HashMap<u64, blockifier::execution::syscalls::committed_data::CommittedDataReadSet>,
     pub(crate) committed_root_branch_cache: HashSet<(Relocatable, Felt)>,
@@ -173,9 +173,29 @@ impl<'a, S: StateReader> SnosHintProcessor<'a, S> {
         }
         let mut committed_data_index = HashMap::with_capacity(witnesses.len());
         for (offset, witness) in witnesses.iter().enumerate() {
-            let key = (witness.root, witness.key);
+            let key = (None, witness.root, witness.key);
             if committed_data_index.insert(key, offset).is_some() {
                 return Err(OsInputError::CommittedData("Duplicate witness".into()).into());
+            }
+        }
+        for block in &os_block_inputs {
+            if block.committed_data_witnesses.len()
+                > blockifier::execution::syscalls::committed_data::MAX_COMMITTED_DATA_WITNESSES
+            {
+                return Err(OsInputError::CommittedData("Too many block witnesses".into()).into());
+            }
+            if !witnesses.is_empty() && !block.committed_data_witnesses.is_empty() {
+                return Err(
+                    OsInputError::CommittedData("Mixed legacy and block witnesses".into()).into()
+                );
+            }
+            for (offset, witness) in block.committed_data_witnesses.iter().enumerate() {
+                let key = (Some(block.block_info.block_number.0), witness.root, witness.key);
+                if committed_data_index.insert(key, offset).is_some() {
+                    return Err(
+                        OsInputError::CommittedData("Duplicate block witness".into()).into()
+                    );
+                }
             }
         }
         let rng_seed = Self::rng_seed(&os_block_inputs, &os_hints_config.rng_seed_salt);
@@ -219,8 +239,14 @@ impl<'a, S: StateReader> SnosHintProcessor<'a, S> {
         root: Felt,
         index: Felt,
     ) -> Option<&blockifier::execution::syscalls::committed_data::CommittedDataWitness> {
+        let block = self.get_current_execution_helper().ok()?.os_block_input;
+        if let Some(offset) =
+            self.committed_data_index.get(&(Some(block.block_info.block_number.0), root, index))
+        {
+            return block.committed_data_witnesses.get(*offset);
+        }
         self.committed_data_index
-            .get(&(root, index))
+            .get(&(None, root, index))
             .and_then(|offset| self.os_hints_config.committed_data_witnesses.get(*offset))
     }
 
@@ -454,5 +480,82 @@ pub struct DeprecatedSyscallHintProcessor {
 impl DeprecatedSyscallHintProcessor {
     pub fn set_syscall_ptr(&mut self, syscall_ptr: Relocatable) {
         self.syscall_ptr = Some(syscall_ptr);
+    }
+}
+
+#[cfg(test)]
+mod committed_witness_tests {
+    use blockifier::execution::syscalls::committed_data::{
+        CommittedDataWitness,
+        MAX_COMMITTED_DATA_WITNESSES,
+    };
+    use starknet_api::block::BlockNumber;
+
+    use super::*;
+
+    // Index construction does not authenticate values: the Cairo program does that during replay.
+    // Distinct keys exercise the actual index bound without constructing 65k cryptographic proofs.
+    fn block(number: u64, count: usize) -> OsBlockInput {
+        let mut block = OsBlockInput::default();
+        block.block_info.block_number = BlockNumber(number);
+        block.committed_data_witnesses = (0..count)
+            .map(|key| CommittedDataWitness {
+                root: Felt::ONE,
+                key: Felt::from(key),
+                value: Felt::from(number),
+                siblings: Vec::new(),
+            })
+            .collect();
+        block
+    }
+
+    #[test]
+    fn multi_block_private_input_has_independent_witness_limits_and_lookup() {
+        let program = Program::default();
+        let first = block(7, MAX_COMMITTED_DATA_WITNESSES);
+        let second = block(8, MAX_COMMITTED_DATA_WITNESSES);
+        let mut processor = SnosHintProcessor::new(
+            &program,
+            OsHintsConfig::default(),
+            vec![&first, &second],
+            BTreeMap::new(),
+            BTreeMap::new(),
+            vec![DictStateReader::default(), DictStateReader::default()],
+        )
+        .unwrap();
+        assert_eq!(processor.committed_data_index.len(), 2 * MAX_COMMITTED_DATA_WITNESSES);
+        for number in [7, 8] {
+            processor.execution_helpers_manager.increment_current_helper_index();
+            assert_eq!(
+                processor.committed_data_witness(Felt::ONE, Felt::ZERO).unwrap().value,
+                Felt::from(number)
+            );
+        }
+    }
+
+    #[rstest::rstest]
+    #[case::oversized(0, "Too many block witnesses")]
+    #[case::duplicate(1, "Duplicate block witness")]
+    #[case::mixed_legacy(2, "Mixed legacy and block witnesses")]
+    fn malformed_block_witness_inputs_are_rejected(#[case] case: u8, #[case] expected: &str) {
+        let program = Program::default();
+        let mut input = block(7, if case == 0 { MAX_COMMITTED_DATA_WITNESSES + 1 } else { 1 });
+        let mut config = OsHintsConfig::default();
+        if case == 1 {
+            input.committed_data_witnesses.push(input.committed_data_witnesses[0].clone());
+        }
+        if case == 2 {
+            config.committed_data_witnesses = input.committed_data_witnesses.clone();
+        }
+        let result = SnosHintProcessor::new(
+            &program,
+            config,
+            vec![&input],
+            BTreeMap::new(),
+            BTreeMap::new(),
+            vec![DictStateReader::default()],
+        );
+        let error = result.err().expect("invalid witness input must be rejected");
+        assert!(error.to_string().contains(expected), "{error}");
     }
 }

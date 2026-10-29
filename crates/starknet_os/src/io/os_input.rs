@@ -39,6 +39,17 @@ pub struct StarknetOsInput {
 #[cfg_attr(any(test, feature = "testing"), derive(Default))]
 #[derive(Debug)]
 pub struct OsBlockInput {
+    /// Private witnesses for this block only. Multi-block PIEs retain the same per-block bound.
+    /// This input changes neither the committed map nor the public OS output.
+    #[cfg_attr(
+        feature = "deserialize",
+        serde(
+            default,
+            deserialize_with = "blockifier::execution::syscalls::committed_data::deserialize_witnesses"
+        )
+    )]
+    pub committed_data_witnesses:
+        Vec<blockifier::execution::syscalls::committed_data::CommittedDataWitness>,
     pub contract_state_commitment_info: CommitmentInfo,
     pub address_to_storage_commitment_info: HashMap<ContractAddress, CommitmentInfo>,
     pub contract_class_commitment_info: CommitmentInfo,

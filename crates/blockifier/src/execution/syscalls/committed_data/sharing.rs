@@ -12,6 +12,7 @@ use super::*;
 
 #[derive(Clone, Debug, Default)]
 struct ReadSet {
+    witnesses: HashSet<(Felt, Felt)>,
     leaves: HashSet<(Felt, Felt)>,
     branches: HashSet<(Felt, Felt)>,
 }
@@ -22,6 +23,25 @@ struct ReadSet {
 pub struct CommittedDataReadSet(Arc<Mutex<ReadSet>>);
 
 impl CommittedDataReadSet {
+    /// Witnesses required by admitted execution, including the independently charged single-key
+    /// ABI.
+    pub fn witness_keys(&self) -> Vec<(Felt, Felt)> {
+        let mut keys: Vec<_> = self
+            .0
+            .lock()
+            .expect("Committed-data read set poisoned")
+            .witnesses
+            .iter()
+            .copied()
+            .collect();
+        keys.sort_unstable();
+        keys
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.0.lock().expect("Committed-data read set poisoned").witnesses.is_empty()
+    }
+
     pub fn fork(&self) -> Self {
         Self(Arc::new(Mutex::new(self.0.lock().expect("Committed-data read set poisoned").clone())))
     }
@@ -67,11 +87,13 @@ pub fn read_values_shared(
     remaining_gas: &mut u64,
     failure: &mut Option<CommittedDataError>,
 ) -> Result<(Vec<Felt>, ExecutionResources), SyscallExecutorBaseError> {
-    let Ok((keys, true)) = read_keys(selector, calldata) else {
+    let Ok((keys, batch)) = read_keys(selector, calldata) else {
         return read_values(enabled, witnesses, selector, calldata, remaining_gas, failure);
     };
     // Preserve permission checks and authenticate every supplied value even on a warm hit.
-    let (values, _) = read_values(enabled, witnesses, selector, calldata, &mut u64::MAX, failure)?;
+    let mut verification_gas = u64::MAX;
+    let (values, single_resources) =
+        read_values(enabled, witnesses, selector, calldata, &mut verification_gas, failure)?;
     let root = calldata[0];
     let mut seen = read_set.0.lock().expect("Committed-data read set poisoned");
     let mut distinct = HashSet::new();
@@ -80,13 +102,25 @@ pub fn read_values_shared(
         .copied()
         .filter(|key| !seen.leaves.contains(&(root, *key)) && distinct.insert(*key))
         .collect();
-    // This is also the OS input's bound. Reject before publishing discounts or a receipt,
-    // rather than admitting a read set that cannot be represented by the replay witness list.
-    if seen.leaves.len() + cold.len() > MAX_COMMITTED_DATA_WITNESSES {
+    // Count both ABIs without giving single reads the batch ABI's deferred-proof discount.
+    let requested: HashSet<_> = keys.iter().map(|key| (root, *key)).collect();
+    if seen.witnesses.len() + requested.difference(&seen.witnesses).count()
+        > MAX_COMMITTED_DATA_WITNESSES
+    {
         let error = CommittedDataError::TooManyWitnesses;
         let info = error.to_string();
         failure.get_or_insert(error);
         return Err(SyscallExecutorBaseError::InvalidSyscallInput { input: selector, info });
+    }
+    if !batch {
+        charge_authenticated_read(
+            selector,
+            resources_gas(&single_resources),
+            remaining_gas,
+            failure,
+        )?;
+        seen.witnesses.extend(requested);
+        return Ok((values, single_resources));
     }
     let mut resources = shared_request_resources(keys.len());
     let mut new_branches = Vec::new();
@@ -105,6 +139,7 @@ pub fn read_values_shared(
         resources += &batch_os_resources(cold.len(), cold.len(), new_branches.len());
     }
     charge_authenticated_read(selector, resources_gas(&resources), remaining_gas, failure)?;
+    seen.witnesses.extend(requested);
     seen.leaves.extend(cold.into_iter().map(|key| (root, key)));
     seen.branches.extend(new_branches.into_iter().map(|hash| (root, hash)));
     Ok((values, resources))
@@ -151,5 +186,126 @@ mod tests {
             call(&before, &next_keys, u64::MAX).unwrap().1
         );
         assert_eq!(call(&CommittedDataReadSet::default(), &first_keys, u64::MAX).unwrap().1, cold);
+    }
+
+    /// Both selectors consume the same block allowance; single reads keep their original gas.
+    #[rstest::rstest]
+    #[case::single("get_value", false)]
+    #[case::batch("get_values", true)]
+    fn witness_capacity_defers_a_transaction_without_consuming_its_nonce(
+        #[case] selector: &str,
+        #[case] batch: bool,
+    ) {
+        use blockifier_test_utils::cairo_versions::{CairoVersion, RunnableCairo1};
+        use blockifier_test_utils::calldata::create_calldata;
+        use starknet_api::invoke_tx_args;
+
+        use crate::blockifier::config::TransactionExecutorConfig;
+        use crate::blockifier::transaction_executor::{
+            TransactionExecutor,
+            TransactionExecutorError,
+        };
+        use crate::context::BlockContext;
+        use crate::state::state_api::StateReader;
+        use crate::transaction::test_utils::{
+            create_test_init_data,
+            default_all_resource_bounds,
+            invoke_tx_with_default_flags,
+        };
+        use crate::transaction::transaction_execution::Transaction;
+
+        let tree = CommittedDataSet::new(vec![(Felt::ZERO, Felt::TWO)]).unwrap();
+        let mut context = BlockContext::create_for_testing();
+        context.use_committed_data = true;
+        context.committed_data_witnesses =
+            Arc::new(CommittedDataWitnesses::new(vec![tree.witness(Felt::ZERO).unwrap()]).unwrap());
+        let data =
+            create_test_init_data(&context.chain_info, CairoVersion::Cairo1(RunnableCairo1::Casm));
+        let args = if batch {
+            vec![tree.root(), Felt::ONE, Felt::ZERO]
+        } else {
+            vec![tree.root(), Felt::ZERO]
+        };
+        let transaction = Transaction::Account(invoke_tx_with_default_flags(invoke_tx_args! {
+            sender_address: data.account_address,
+            resource_bounds: default_all_resource_bounds(),
+            calldata: create_calldata(COMMITTED_DATA_ADDRESS.try_into().unwrap(), selector, &args),
+        }));
+        let mut executor = TransactionExecutor::new(
+            data.state,
+            context.clone(),
+            TransactionExecutorConfig::default(),
+        );
+        // Model the distinct keys admitted before this transaction without executing 65k calls.
+        executor
+            .block_context
+            .committed_data_read_set
+            .0
+            .lock()
+            .unwrap()
+            .witnesses
+            .extend((0..MAX_COMMITTED_DATA_WITNESSES).map(|key| (Felt::ONE, Felt::from(key))));
+        let nonce =
+            executor.block_state.as_ref().unwrap().get_nonce_at(data.account_address).unwrap();
+        assert!(matches!(executor.execute(&transaction), Err(TransactionExecutorError::BlockFull)));
+        assert_eq!(
+            executor.block_state.as_ref().unwrap().get_nonce_at(data.account_address).unwrap(),
+            nonce
+        );
+        assert_eq!(
+            executor.block_context.committed_data_read_set.witness_keys().len(),
+            MAX_COMMITTED_DATA_WITNESSES
+        );
+        let state = executor.block_state.take().unwrap();
+        let mut next =
+            TransactionExecutor::new(state, context, TransactionExecutorConfig::default());
+        let (execution, _) = next.execute(&transaction).unwrap();
+        assert!(execution.revert_error.is_none());
+        assert_eq!(
+            next.block_context.committed_data_read_set.witness_keys(),
+            vec![(tree.root(), Felt::ZERO)]
+        );
+        assert_ne!(
+            next.block_state.as_ref().unwrap().get_nonce_at(data.account_address).unwrap(),
+            nonce
+        );
+    }
+
+    #[test]
+    fn single_reads_share_witness_identity_without_warming_batch_proof_discounts() {
+        let tree = CommittedDataSet::new(vec![(Felt::ZERO, Felt::TWO)]).unwrap();
+        let witnesses =
+            CommittedDataWitnesses::new(vec![tree.witness(Felt::ZERO).unwrap()]).unwrap();
+        let seen = CommittedDataReadSet::default();
+        let single = selector_from_name("get_value").0;
+        for _ in 0..2 {
+            let mut gas = u64::MAX;
+            let (_, resources) = read_values_shared(
+                true,
+                &witnesses,
+                &seen,
+                single,
+                &[tree.root(), Felt::ZERO],
+                &mut gas,
+                &mut None,
+            )
+            .unwrap();
+            assert_eq!(u64::MAX - gas, read_gas(0));
+            assert_eq!(resources, read_os_resources(0));
+        }
+        assert_eq!(seen.witness_keys(), vec![(tree.root(), Felt::ZERO)]);
+        let mut gas = u64::MAX;
+        let (_, resources) = read_values_shared(
+            true,
+            &witnesses,
+            &seen,
+            selector_from_name("get_values").0,
+            &[tree.root(), Felt::TWO, Felt::ZERO, Felt::ZERO],
+            &mut gas,
+            &mut None,
+        )
+        .unwrap();
+        assert_eq!(resources, &shared_request_resources(2) + &batch_os_resources(1, 1, 0));
+        assert_eq!(seen.witness_keys().len(), 1);
     }
 }
